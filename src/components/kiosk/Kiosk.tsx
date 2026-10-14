@@ -4,10 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mirrorCall, MirrorError, type DeviceHello, type SessionState, type Theme } from '@/lib/api';
 import { readLaunchParams, settings, type LaunchParams } from '@/lib/settings';
 import { Capture } from './Capture';
-import { Attract, Consent, Ending, Generating, Pair, Result, StillThere, Unregistered, Wardrobe } from './Screens';
+import { Attract, Consent, Ending, Generating, Pair, Result, StillThere, Unregistered, Visitor, Wardrobe } from './Screens';
+import { EMODE_APP_URL } from '@/lib/links';
 
 type Stage =
     | { name: 'boot' }
+    | { name: 'visitor' }
     | { name: 'unregistered'; message: string }
     | { name: 'attract' }
     | { name: 'consent' }
@@ -61,8 +63,10 @@ export function Kiosk() {
         const params = readLaunchParams();
         setLaunch(params);
         setTheme(params.themeOverride ?? settings.theme() ?? 'dark');
+        // No device link at all is a visitor, not a broken mirror. A key that
+        // the server refuses is a mirror that needs attention, and says so.
         if (!params.deviceKey) {
-            setStage({ name: 'unregistered', message: 'This screen isn’t set up as an Emode Mirror yet.' });
+            setStage({ name: 'visitor' });
             return;
         }
 
@@ -283,6 +287,9 @@ export function Kiosk() {
     switch (stage.name) {
         case 'boot':
             screen = <div className="grid h-full place-items-center text-[1rem] text-faint animate-soft-pulse">Starting…</div>;
+            break;
+        case 'visitor':
+            screen = <Visitor appUrl={EMODE_APP_URL} />;
             break;
         case 'unregistered':
             screen = <Unregistered message={stage.message} />;
