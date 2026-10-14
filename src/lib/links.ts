@@ -12,3 +12,14 @@ export const EMODE_APP_URL = process.env.NEXT_PUBLIC_EMODE_APP_URL
 export function openInAppUrl(sessionId: string, token: string) {
     return `emode://mirror/${sessionId}?t=${encodeURIComponent(token)}`;
 }
+
+/**
+ * Whether the phone page offers "Open in Emode".
+ *
+ * Off until the app build that understands emode://mirror is live. The web
+ * page deploys on every push; the app ships through App Review and over-the-air
+ * updates on its own schedule. Offering the hand-off before the app can catch
+ * it lands people on the app's "unmatched route" screen. Flip it on in Vercel
+ * (NEXT_PUBLIC_MIRROR_APP_HANDOFF=1) the day the app update goes out.
+ */
+export const APP_HANDOFF_ENABLED = process.env.NEXT_PUBLIC_MIRROR_APP_HANDOFF === '1';

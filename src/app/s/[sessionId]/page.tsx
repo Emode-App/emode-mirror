@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { mirrorCall, MirrorError, type Garment, type Look, type PhoneState } from '@/lib/api';
 import { prepareUpload } from '@/lib/image';
-import { EMODE_APP_URL, openInAppUrl } from '@/lib/links';
+import { APP_HANDOFF_ENABLED, EMODE_APP_URL, openInAppUrl } from '@/lib/links';
 import { Wordmark } from '@/components/Wordmark';
 
 /**
@@ -182,7 +182,7 @@ export default function PhoneCompanion() {
                 </section>
             )}
 
-            {active && token && (
+            {active && token && APP_HANDOFF_ENABLED && (
                 state.linked ? (
                     <section className="mt-6 rounded-2xl bg-obsidian p-5 text-cream">
                         <p className="text-xs font-semibold uppercase tracking-[0.25em] text-gold">Emode account connected</p>
