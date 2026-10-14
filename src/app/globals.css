@@ -1,26 +1,100 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/*
+ * Colours come from the theme on the nearest [data-theme], so the kiosk can
+ * flip between a black and a white "empty" without touching a component.
+ * Which one a Luma actually renders as empty space is settled at /calibrate.
+ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+    --color-bg: var(--bg);
+    --color-fg: var(--fg);
+    --color-muted: var(--muted);
+    --color-faint: var(--faint);
+    --color-line: var(--line);
+    --color-surface: var(--surface);
+    --color-surface-strong: var(--surface-strong);
+    --color-gold: #c5a059;
+    --color-cream: #f5f2ec;
+    --color-obsidian: #0a0a0a;
+    --font-display: var(--font-outfit), ui-sans-serif, system-ui, sans-serif;
+    --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root,
+[data-theme="dark"] {
+    --bg: #000000;
+    --fg: #f5f2ec;
+    --muted: rgb(245 242 236 / 0.66);
+    --faint: rgb(245 242 236 / 0.4);
+    --line: rgb(245 242 236 / 0.16);
+    --surface: rgb(245 242 236 / 0.06);
+    --surface-strong: rgb(245 242 236 / 0.12);
+    --glow: rgb(197 160 89 / 0.28);
+    --shadow: rgb(0 0 0 / 0);
 }
 
+[data-theme="light"] {
+    --bg: #ffffff;
+    --fg: #0a0a0a;
+    --muted: rgb(10 10 10 / 0.62);
+    --faint: rgb(10 10 10 / 0.4);
+    --line: rgb(10 10 10 / 0.14);
+    --surface: rgb(10 10 10 / 0.04);
+    --surface-strong: rgb(10 10 10 / 0.08);
+    --glow: rgb(197 160 89 / 0.22);
+    --shadow: rgb(10 10 10 / 0.16);
+}
+
+/* The phone pages: Emode's warm cream, independent of the kiosk theme. */
+[data-theme="phone"] {
+    --bg: #f5f2ec;
+    --fg: #0a0a0a;
+    --muted: rgb(10 10 10 / 0.62);
+    --faint: rgb(10 10 10 / 0.42);
+    --line: rgb(10 10 10 / 0.12);
+    --surface: #ffffff;
+    --surface-strong: #ece7dd;
+}
+
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+}
+
+/* ── Kiosk motion ────────────────────────────────────────────────────── */
+
+@keyframes mirror-breathe {
+    0%, 100% { opacity: 0.55; transform: translate(-50%, -50%) scale(1); }
+    50% { opacity: 0.9; transform: translate(-50%, -50%) scale(1.08); }
+}
+@keyframes mirror-rise {
+    from { opacity: 0; transform: translateY(0.6rem); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes mirror-pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 1; }
+}
+@keyframes mirror-scan {
+    0% { transform: translateY(-10%); }
+    100% { transform: translateY(1000%); }
+}
+@keyframes mirror-flash {
+    from { opacity: 0.95; }
+    to { opacity: 0; }
+}
+@keyframes mirror-count {
+    0% { opacity: 0; transform: scale(1.6); }
+    25% { opacity: 1; transform: scale(1); }
+    85% { opacity: 1; }
+    100% { opacity: 0; transform: scale(0.85); }
+}
+
+.animate-rise { animation: mirror-rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.animate-soft-pulse { animation: mirror-pulse 2.4s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }

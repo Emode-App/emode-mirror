@@ -1,0 +1,77 @@
+// Client for the `mirror` edge function, shared by the kiosk and the phone.
+//
+// The values below are public by design: the anon key only gets a request to
+// the function's front door. What a caller may actually do is decided there,
+// by the device key (kiosk) or the session token (phone).
+
+const API_URL = process.env.NEXT_PUBLIC_MIRROR_API_URL
+    ?? 'https://scvvbjheyfnxlsiiozta.supabase.co/functions/v1/mirror';
+const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    ?? 'sb_publishable_xBWtFjEoKrG4wCSzGVkigw_A-i0UfJi';
+
+export type Theme = 'dark' | 'light';
+
+export interface Garment {
+    id: string;
+    source: 'upload' | 'link';
+    title: string | null;
+    productUrl: string | null;
+    imageUrl: string | null;
+}
+
+export interface Look {
+    id: string;
+    status: 'pending' | 'succeeded' | 'failed';
+    error: string | null;
+    garmentIds: string[];
+    imageUrl: string | null;
+    createdAt: string;
+}
+
+export interface SessionState {
+    id: string;
+    status: 'active' | 'ended';
+    hasPhoto: boolean;
+    endedAt: string | null;
+    retainUntil: string | null;
+    garments: Garment[];
+    looks: Look[];
+}
+
+export interface PhoneState extends SessionState {
+    device: { name: string | null; location: string | null };
+    limits: { garmentsPerSession: number };
+}
+
+export interface DeviceHello {
+    device: { name: string; location: string | null; theme: Theme };
+    limits: { garmentsPerLook: number; idleMinutes: number; retainMinutes: number };
+}
+
+export class MirrorError extends Error {
+    constructor(message: string, public status: number, public code?: string) {
+        super(message);
+    }
+}
+
+export async function mirrorCall<T>(body: Record<string, unknown>, deviceKey?: string | null): Promise<T> {
+    let res: Response;
+    try {
+        res = await fetch(API_URL, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                apikey: ANON_KEY,
+                authorization: `Bearer ${ANON_KEY}`,
+                ...(deviceKey ? { 'x-mirror-device-key': deviceKey } : {}),
+            },
+            body: JSON.stringify(body),
+            cache: 'no-store',
+        });
+    } catch {
+        throw new MirrorError('Could not reach Emode. Check the connection and try again.', 0, 'offline');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new MirrorError(data?.error || 'Something went wrong', res.status, data?.code);
+    return data as T;
+}

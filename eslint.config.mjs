@@ -18,6 +18,8 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Deno code for the Supabase edge runtime, not part of the Next app.
+      "supabase/**",
     ],
   },
 ];
