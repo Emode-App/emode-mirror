@@ -89,6 +89,25 @@ and the service role; the browser only ever sends the public anon key.
 3. When submitting to Proto, ask for **Include Serial Number** (adds
    `protoSerialNumber`, recorded per device) and **Pinch to Zoom: off**.
 
+## Emode members, and the funnel
+
+- **Members bring their wardrobe.** The phone page's *Open in Emode* hands the
+  visit to the app (`emode://mirror/<visit>?t=<token>`), which claims it and
+  sends pieces straight from the user's wardrobe, then saves finished looks
+  into their try-on history. Claiming needs the visit token **and** a
+  signed-in account; the kiosk is only told "a wardrobe is connected", never
+  whose. App side: branch `feat/emode-mirror` in Emode-App/fitted.
+  The button is behind `NEXT_PUBLIC_MIRROR_APP_HANDOFF=1` in Vercel — leave it
+  off until that app update is live, or people land on an unmatched route.
+- **Guests are invited to the app** after their first look (TestFlight for now;
+  set `NEXT_PUBLIC_EMODE_APP_URL` to the App Store link once it's live).
+- **Categories.** Pieces are grouped into tops / outerwear / bottoms / shoes /
+  accessories — wardrobe pieces from their folder, uploads and links by a small
+  classifier in the background.
+- **`mirror_events`** records each step — visit, pairing, pieces, looks, app
+  taps, product links opened — with no people in it. It's the funnel for Emode
+  and the usage report for a store.
+
 ## Privacy — the rules the code enforces
 
 - Nobody is photographed without tapping a consent screen that says what
