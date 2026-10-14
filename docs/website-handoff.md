@@ -32,10 +32,24 @@ Audience: shoppers who saw one, and retailers who might want one.
 
 ### 2. `/mirror/business` — retailer inquiry form
 
-Position it as software for Proto displays a retailer already owns: "Turn your
-Proto into an AI fitting room." Points: bring-your-own-garment (any store's
-clothes), native touchscreen experience, multi-piece outfits, links back to the
-products.
+Position it as **an Emode Mirror on your store floor** — a life-size, Emode-branded
+try-on mirror for clothing retailers. Headline along the lines of "A fitting
+room that never runs out of sizes." Don't assume the store already owns a
+Proto display: some will, most won't, and the form asks.
+
+Points to make:
+- **Your rack, life-size.** Shoppers try your pieces on in seconds — no
+  changing room queue, no stock pulled off the floor.
+- **Plus everything they already own.** Visitors with Emode bring their whole
+  wardrobe to the mirror from the app, so they see your piece *with* their
+  own jeans.
+- **Every look leads back to you.** Looks go home on the shopper's phone with
+  links to the pieces.
+- **Know what gets tried.** Visits, looks and the pieces people reach for,
+  per mirror. (This is real — the mirror already records it, without storing
+  anyone's photo.)
+- **Private by design.** One photo, deleted when the visit ends. Good to say
+  plainly to a retailer's legal team.
 
 **Do not publish prices yet.**
 
@@ -50,7 +64,7 @@ await supabase.from('mirror_inquiries').insert({
   phone,           // optional, ≤40
   industry,        // optional: retail | luxury | events | hospitality | other
   device_count,    // optional integer
-  proto_model,     // optional: Luma | Epic | M | M2 | "Don't own one yet"
+  proto_model,     // optional: Luma | Epic | M | M2 | "We don't have one yet"
   use_case,        // optional, ≤4000
   wants_demo,      // boolean
   source: 'website/mirror/business',
