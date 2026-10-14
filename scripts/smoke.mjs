@@ -134,10 +134,28 @@ for (const productLink of productLinks) {
     check(`product link imports (${new URL(productLink).hostname})`, link.status === 200, link.body?.title || link.body?.error);
 }
 
+// Members: claiming a visit needs a signed-in Emode account as well as the token.
+const linkNoUser = await call({ action: 'phone.link', sessionId, token });
+check('linking a visit without an Emode sign-in is refused', linkNoUser.status === 401, linkNoUser.body?.code);
+const wardrobeNoUser = await call({ action: 'garment.from_wardrobe', sessionId, token, urls: ['https://example.com/a.jpg'] });
+check('sending wardrobe pieces without a sign-in is refused', wardrobeNoUser.status === 401);
+
+const tracked = await call({ action: 'event.track', sessionId, token, type: 'app_cta_tapped', where: 'phone_look' });
+check('the phone can record an app tap', tracked.status === 200);
+const bogus = await call({ action: 'event.track', sessionId, token, type: 'visit_started' });
+check('the phone cannot write arbitrary events', bogus.status === 400);
+
+if (productLinks.length) {
+    // Categories arrive a few seconds later, from a background classifier.
+    await new Promise((r) => setTimeout(r, 7000));
+}
 const state = await call({ action: 'session.state', sessionId }, key);
 const garments = state.body?.garments || [];
 check('kiosk sees the garments', state.status === 200 && garments.length >= 1, `${garments.length} garment(s)`);
 check('garment images are signed URLs', garments.every((g) => g.imageUrl?.includes('/object/sign/')));
+for (const g of garments.filter((g) => g.source === 'link')) {
+    check(`linked piece got a category`, !!g.category, `${g.title?.slice(0, 40)} → ${g.category}`);
+}
 
 const noPhoto = await call({ action: 'look.generate', sessionId, garmentIds: [garments[0]?.id] }, key);
 check('generating before a photo is refused', noPhoto.status === 409, noPhoto.body?.code);

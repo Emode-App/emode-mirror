@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { mirrorCall, MirrorError, type Garment, type Look, type PhoneState } from '@/lib/api';
 import { prepareUpload } from '@/lib/image';
+import { EMODE_APP_URL, openInAppUrl } from '@/lib/links';
 import { Wordmark } from '@/components/Wordmark';
 
 /**
@@ -32,6 +33,11 @@ export default function PhoneCompanion() {
 
     const call = useCallback(<T,>(body: Record<string, unknown>) =>
         mirrorCall<T>({ ...body, sessionId, token }), [sessionId, token]);
+
+    // Counted for the funnel. Fire-and-forget: a lost count never blocks a tap.
+    const track = useCallback((type: 'app_cta_tapped' | 'product_link_opened', extra: Record<string, unknown>) => {
+        if (token) call({ action: 'event.track', type, ...extra }).catch(() => {});
+    }, [call, token]);
 
     const refresh = useCallback(async () => {
         if (!token) return;
@@ -176,6 +182,31 @@ export default function PhoneCompanion() {
                 </section>
             )}
 
+            {active && token && (
+                state.linked ? (
+                    <section className="mt-6 rounded-2xl bg-obsidian p-5 text-cream">
+                        <p className="text-xs font-semibold uppercase tracking-[0.25em] text-gold">Emode account connected</p>
+                        <p className="mt-2 text-sm text-cream/80">Send pieces from your wardrobe and save your looks in the Emode app.</p>
+                        <a href={openInAppUrl(sessionId, token)} className="mt-4 inline-block rounded-full bg-cream px-5 py-2.5 text-sm font-semibold text-obsidian">
+                            Open Emode
+                        </a>
+                    </section>
+                ) : (
+                    <a href={openInAppUrl(sessionId, token)}
+                        className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-line bg-surface px-4 py-3.5">
+                        <span className="text-sm">
+                            <span className="font-semibold">Already on Emode?</span>{' '}
+                            <span className="text-muted">Send pieces from your wardrobe.</span>
+                        </span>
+                        <span className="shrink-0 text-sm font-semibold underline underline-offset-4">Open app</span>
+                    </a>
+                )
+            )}
+
+            {looks.length > 0 && !state.linked && (
+                <AppCard where={active ? 'phone_look' : 'phone_ended'} onTap={(where) => track('app_cta_tapped', { where })} />
+            )}
+
             {styling && (
                 <p className="mt-6 rounded-xl bg-surface-strong px-4 py-3 text-center text-sm animate-soft-pulse">The mirror is styling a look…</p>
             )}
@@ -185,7 +216,8 @@ export default function PhoneCompanion() {
                     <h2 className="font-display text-xl font-semibold">Your looks</h2>
                     <div className="mt-3 flex flex-col gap-5">
                         {looks.map((look, i) => (
-                            <LookCard key={look.id} look={look} number={looks.length - i} garments={garments} />
+                            <LookCard key={look.id} look={look} number={looks.length - i} garments={garments}
+                                onShop={(url) => track('product_link_opened', { url })} />
                         ))}
                     </div>
                 </section>
@@ -219,7 +251,8 @@ export default function PhoneCompanion() {
 
             <footer className="mt-12 border-t border-line pt-6 text-center text-xs leading-relaxed text-faint">
                 <p>Your photo is deleted when the visit ends. Looks are kept for an hour so you can save them, then deleted.</p>
-                <a href="https://www.emode.style" className="mt-4 inline-block font-semibold text-obsidian underline underline-offset-4">
+                <a href={EMODE_APP_URL} target="_blank" rel="noopener noreferrer" onClick={() => track('app_cta_tapped', { where: 'phone_footer' })}
+                    className="mt-4 inline-block font-semibold text-obsidian underline underline-offset-4">
                     Try on clothes anywhere with Emode →
                 </a>
             </footer>
@@ -238,7 +271,29 @@ function Shell({ children }: { children: React.ReactNode }) {
     );
 }
 
-function LookCard({ look, number, garments }: { look: Look; number: number; garments: Garment[] }) {
+/**
+ * The moment the mirror has earned the most goodwill -- they just saw themselves
+ * in something new -- is the moment to say this works from their couch too.
+ */
+function AppCard({ where, onTap }: { where: 'phone_look' | 'phone_ended'; onTap: (where: string) => void }) {
+    return (
+        <section className="mt-6 overflow-hidden rounded-2xl bg-obsidian text-cream">
+            <div className="p-5">
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-gold">Keep every look</p>
+                <h2 className="mt-2 font-display text-2xl font-semibold leading-tight tracking-tight">Try on anything, anytime — from your phone.</h2>
+                <p className="mt-2 text-sm text-cream/75">
+                    Emode keeps your wardrobe, your looks and the people whose style you love, all in one place.
+                </p>
+                <a href={EMODE_APP_URL} target="_blank" rel="noopener noreferrer" onClick={() => onTap(where)}
+                    className="mt-4 inline-flex h-11 items-center rounded-full bg-cream px-5 text-sm font-semibold text-obsidian">
+                    Get Emode — it’s free
+                </a>
+            </div>
+        </section>
+    );
+}
+
+function LookCard({ look, number, garments, onShop }: { look: Look; number: number; garments: Garment[]; onShop: (url: string) => void }) {
     const [saving, setSaving] = useState(false);
     const pieces = look.garmentIds.map((id) => garments.find((g) => g.id === id)).filter(Boolean) as Garment[];
     const shoppable = pieces.filter((g) => g.productUrl);
@@ -283,7 +338,7 @@ function LookCard({ look, number, garments }: { look: Look; number: number; garm
                     <div className="flex flex-col gap-1.5">
                         <span className="text-xs uppercase tracking-[0.2em] text-faint">Shop this look</span>
                         {shoppable.map((g) => (
-                            <a key={g.id} href={g.productUrl!} target="_blank" rel="noopener noreferrer"
+                            <a key={g.id} href={g.productUrl!} target="_blank" rel="noopener noreferrer" onClick={() => onShop(g.productUrl!)}
                                 className="truncate text-sm font-medium underline underline-offset-4">
                                 {g.title || new URL(g.productUrl!).hostname}
                             </a>

@@ -11,9 +11,13 @@ const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 export type Theme = 'dark' | 'light';
 
+export type Category = 'tops' | 'outerwear' | 'bottoms' | 'shoes' | 'accessories' | 'other';
+
 export interface Garment {
     id: string;
-    source: 'upload' | 'link';
+    source: 'upload' | 'link' | 'wardrobe';
+    /** Filled in a few seconds after an upload or link, by a classifier; immediate for wardrobe pieces. */
+    category: Category | null;
     title: string | null;
     productUrl: string | null;
     imageUrl: string | null;
@@ -32,6 +36,8 @@ export interface SessionState {
     id: string;
     status: 'active' | 'ended';
     hasPhoto: boolean;
+    /** An Emode account has claimed this visit from the app. Never says whose. */
+    linked: boolean;
     endedAt: string | null;
     retainUntil: string | null;
     garments: Garment[];

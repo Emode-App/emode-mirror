@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { Garment, Look } from '@/lib/api';
+import { useEffect, useMemo, useState } from 'react';
+import type { Category, Garment, Look } from '@/lib/api';
 import { Qr } from '@/components/Qr';
 import { Wordmark } from '@/components/Wordmark';
 import { Bloom, Eyebrow, KioskButton, Title } from './ui';
@@ -123,14 +123,26 @@ export function GarmentTile({
     );
 }
 
+/** Says a wardrobe is connected without saying whose -- this is a public screen. */
+function LinkedNote() {
+    return (
+        <p className="inline-flex items-center gap-[0.5rem] rounded-full border-[0.06rem] border-gold/50 px-[0.9rem] py-[0.35rem] text-[0.7rem] text-gold">
+            <span className="h-[0.45rem] w-[0.45rem] rounded-full bg-gold" />
+            Emode wardrobe connected
+        </p>
+    );
+}
+
 export function Pair({
     phoneUrl,
     garments,
+    linked,
     onContinue,
     onCancel,
 }: {
     phoneUrl: string;
     garments: Garment[];
+    linked: boolean;
     onContinue: () => void;
     onCancel: () => void;
 }) {
@@ -139,10 +151,11 @@ export function Pair({
             <Eyebrow>Step one</Eyebrow>
             <Title className="mt-[0.8rem]">Bring your clothes.</Title>
             <p className="mt-[1rem] max-w-[28rem] text-[1rem] leading-[1.45] text-muted">
-                Scan with your phone&apos;s camera, then send screenshots or product links. They&apos;ll appear here.
+                Scan with your phone&apos;s camera, then send screenshots or product links — or pieces from your Emode wardrobe.
             </p>
 
             <Qr value={phoneUrl} className="mt-[2.4rem] w-[15rem]" />
+            {linked && <div className="mt-[1.2rem]"><LinkedNote /></div>}
 
             <div className="mt-[2.4rem] w-full">
                 {garments.length === 0 ? (
@@ -171,12 +184,23 @@ export function Pair({
     );
 }
 
+const CATEGORY_LABELS: Record<Category, string> = {
+    tops: 'Tops',
+    outerwear: 'Outerwear',
+    bottoms: 'Bottoms',
+    shoes: 'Shoes',
+    accessories: 'Accessories',
+    other: 'Other',
+};
+const CATEGORY_ORDER: Category[] = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'];
+
 export function Wardrobe({
     garments,
     selected,
     maxPieces,
     hasPhoto,
     hasLooks,
+    linked,
     phoneUrl,
     error,
     onToggle,
@@ -190,6 +214,7 @@ export function Wardrobe({
     maxPieces: number;
     hasPhoto: boolean;
     hasLooks: boolean;
+    linked: boolean;
     phoneUrl: string;
     error: string | null;
     onToggle: (id: string) => void;
@@ -198,6 +223,22 @@ export function Wardrobe({
     onBackToLooks: () => void;
     onFinish: () => void;
 }) {
+    // Grouped the way the app's wardrobe already is. Tabs only appear once
+    // there is more than one kind of thing to choose between; a piece that has
+    // not been classified yet counts as Other until it is.
+    const [tab, setTab] = useState<Category | 'all'>('all');
+    const counts = useMemo(() => {
+        const c = new Map<Category, number>();
+        for (const g of garments) c.set(g.category ?? 'other', (c.get(g.category ?? 'other') ?? 0) + 1);
+        return c;
+    }, [garments]);
+    const tabs = CATEGORY_ORDER.filter((c) => counts.get(c));
+    const showTabs = tabs.length > 1;
+    const shown = tab === 'all' || !showTabs ? garments : garments.filter((g) => (g.category ?? 'other') === tab);
+    useEffect(() => {
+        if (tab !== 'all' && !counts.get(tab)) setTab('all');
+    }, [tab, counts]);
+
     return (
         <div className="flex h-full flex-col px-[2.6rem] pt-[5rem]">
             <div className="flex items-end justify-between gap-[1rem]">
@@ -214,8 +255,25 @@ export function Wardrobe({
                 </div>
             </div>
 
-            <div className="mt-[2rem] grid min-h-0 flex-1 auto-rows-min grid-cols-3 gap-[0.9rem] overflow-y-auto pb-[1rem]">
-                {garments.map((g) => (
+            {(linked || showTabs) && (
+                <div className="mt-[1.4rem] flex flex-col gap-[0.9rem]">
+                    {linked && <LinkedNote />}
+                    {showTabs && (
+                        <div className="flex gap-[0.5rem] overflow-x-auto pb-[0.2rem]">
+                            {(['all', ...tabs] as const).map((c) => (
+                                <button key={c} type="button" onClick={() => setTab(c)}
+                                    className={`shrink-0 rounded-full px-[1rem] py-[0.5rem] font-display text-[0.75rem] font-semibold transition
+                                        ${tab === c ? 'bg-fg text-bg' : 'border-[0.06rem] border-line text-muted'}`}>
+                                    {c === 'all' ? `All ${garments.length}` : `${CATEGORY_LABELS[c]} ${counts.get(c)}`}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            <div className="mt-[1.4rem] grid min-h-0 flex-1 auto-rows-min grid-cols-3 gap-[0.9rem] overflow-y-auto pb-[1rem]">
+                {shown.map((g) => (
                     <GarmentTile key={g.id} garment={g} selectedIndex={selected.indexOf(g.id)} onToggle={() => onToggle(g.id)} />
                 ))}
             </div>

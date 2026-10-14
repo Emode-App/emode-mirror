@@ -143,6 +143,155 @@ function touch(sessionId: string) {
         .eq('id', sessionId);
 }
 
+// ───────────────────────────────────────────────────────────────── events ────
+
+type EventType =
+    | 'visit_started' | 'phone_paired' | 'garment_added' | 'look_generated' | 'look_failed'
+    | 'visit_ended' | 'product_link_opened' | 'app_cta_tapped' | 'account_linked'
+    | 'wardrobe_sent' | 'look_saved_to_account';
+
+/**
+ * Count something that happened at a mirror.
+ *
+ * Never blocks or fails the request it rides on: a lost analytics row is a
+ * shrug, a try-on that errors because the counter hiccupped is not. Callers
+ * pass only non-personal metadata -- store hostnames, counts, durations.
+ */
+function logEvent(deviceId: string, sessionId: string | null, type: EventType, meta: Record<string, unknown> = {}) {
+    admin.from('mirror_events')
+        .insert({ device_id: deviceId, session_id: sessionId, type, meta })
+        .then(({ error }) => { if (error) console.warn('event not logged', type, error.message); });
+}
+
+function hostOf(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+        return new URL(url).hostname.replace(/^www\d?\./, '');
+    } catch {
+        return null;
+    }
+}
+
+// ────────────────────────────────────────────────────────── categories ────
+
+const CATEGORIES = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'] as const;
+type Category = typeof CATEGORIES[number];
+
+/** The app's wardrobe folders, in the mirror's vocabulary. */
+function categoryFromFolder(slug: string | null | undefined, name: string | null | undefined): Category | null {
+    const s = `${slug || ''} ${name || ''}`.toLowerCase();
+    if (/shirt|top|tee|blouse|sweater|knit|hood/.test(s)) return 'tops';
+    if (/jacket|coat|outer|blazer/.test(s)) return 'outerwear';
+    if (/pant|jean|trouser|short|skirt|bottom/.test(s)) return 'bottoms';
+    if (/shoe|sneaker|boot|footwear/.test(s)) return 'shoes';
+    if (/access|bag|hat|cap|jewel|belt|scarf|glass/.test(s)) return 'accessories';
+    return null;
+}
+
+const CLASSIFY_MODEL = Deno.env.get('MIRROR_CLASSIFY_MODEL') || 'gemini-2.5-flash';
+
+/**
+ * Sort an uploaded or linked piece into a category, after the fact.
+ *
+ * A cheap text answer from a small model, run in the background so the upload
+ * itself never waits on it. If it fails the piece simply lands under "Other" --
+ * the tabs are a convenience, not a gate.
+ */
+async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: string) {
+    if (!GEMINI_API_KEY) return;
+    const res = await fetch(`${GEMINI_BASE}/${CLASSIFY_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            contents: [{
+                parts: [
+                    { inlineData: { mimeType: mime, data: encodeBase64(bytes) } },
+                    { text: `This image shows a clothing item, possibly worn by a model. Which single category is the main product? Answer with exactly one word from: ${CATEGORIES.join(', ')}.` },
+                ],
+            }],
+            generationConfig: { temperature: 0, maxOutputTokens: 5 },
+        }),
+    });
+    if (!res.ok) {
+        console.warn('classify failed', res.status, (await res.text().catch(() => '')).slice(0, 300));
+        return;
+    }
+    const data = await res.json();
+    const word = String(data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+    const category = (CATEGORIES as readonly string[]).includes(word) ? word : 'other';
+    await admin.from('mirror_garments').update({ category }).eq('id', garmentId);
+}
+
+/** Store a piece's image and record it on the visit. Shared by every way a piece arrives. */
+async function addGarment(session: any, image: { bytes: Uint8Array; mime: string; ext: string }, fields: {
+    source: 'upload' | 'link' | 'wardrobe';
+    title?: string | null;
+    productUrl?: string | null;
+    category?: Category | null;
+}) {
+    const id = crypto.randomUUID();
+    const path = `sessions/${session.id}/garments/${id}.${image.ext}`;
+    const { error: upError } = await admin.storage.from(BUCKET)
+        .upload(path, image.bytes, { contentType: image.mime });
+    if (upError) throw new Error(upError.message);
+    const { error } = await admin.from('mirror_garments').insert({
+        id,
+        session_id: session.id,
+        source: fields.source,
+        image_path: path,
+        title: fields.title ? String(fields.title).slice(0, 300) : null,
+        product_url: fields.productUrl || null,
+        category: fields.category || null,
+    });
+    if (error) throw new Error(error.message);
+    if (!fields.category) background(classifyGarment(id, image.bytes, image.mime));
+    logEvent(session.device_id, session.id, 'garment_added', {
+        source: fields.source,
+        host: hostOf(fields.productUrl),
+        category: fields.category || null,
+    });
+    return id;
+}
+
+async function garmentCount(sessionId: string) {
+    const { count } = await admin.from('mirror_garments')
+        .select('id', { count: 'exact', head: true }).eq('session_id', sessionId);
+    return count || 0;
+}
+
+// ──────────────────────────────────────────────────────────────── members ────
+
+/**
+ * The Emode account making this request, if it is a signed-in app.
+ *
+ * The app's Supabase client sends the user's access token as the bearer; the
+ * phone web page and the kiosk send the public anon key, which resolves to no
+ * user. So this answers "who" only when there is a real account behind it.
+ */
+async function optionalUser(req: Request): Promise<{ id: string } | null> {
+    const bearer = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    if (bearer.split('.').length !== 3) return null;
+    const { data, error } = await admin.auth.getUser(bearer);
+    if (error || !data?.user) return null;
+    return { id: data.user.id };
+}
+
+async function requireUser(req: Request) {
+    const user = await optionalUser(req);
+    if (!user) throw new HttpError(401, 'Sign in to Emode to use your wardrobe', 'sign_in');
+    return user;
+}
+
+/** The visit, provided this phone scanned it AND this account has claimed it. */
+async function requireMemberSession(req: Request, body: any, opts = { active: true }) {
+    const user = await requireUser(req);
+    const session = await requirePhoneSession(body, opts);
+    if (session.user_id !== user.id) {
+        throw new HttpError(403, 'Connect this visit to your account first', 'not_linked');
+    }
+    return { user, session };
+}
+
 // ─────────────────────────────────────────────────────────────────── auth ────
 
 async function requireDevice(req: Request, body: any) {
@@ -194,6 +343,18 @@ async function requirePhoneSession(body: any, { active = true } = {}) {
     if (active && session.status !== 'active') {
         throw new HttpError(409, 'This mirror visit has ended — you can still save your looks below', 'session_ended');
     }
+    // Any phone call on a live visit means a phone has paired with it. Counted
+    // once, set-if-null, so racing polls cannot double it.
+    if (!session.phone_seen_at && session.status === 'active') {
+        const { data: first } = await admin.from('mirror_sessions')
+            .update({ phone_seen_at: new Date().toISOString() })
+            .eq('id', session.id).is('phone_seen_at', null)
+            .select('id');
+        if (first?.length) {
+            session.phone_seen_at = new Date().toISOString();
+            logEvent(session.device_id, session.id, 'phone_paired');
+        }
+    }
     return session;
 }
 
@@ -210,6 +371,9 @@ async function describeSession(session: any) {
         id: session.id,
         status: session.status,
         hasPhoto: !!session.person_path,
+        // Whether an Emode account has claimed the visit. A yes/no only: the
+        // kiosk is a public screen and never learns whose account it is.
+        linked: !!session.user_id,
         endedAt: session.ended_at,
         retainUntil: session.ended_at
             ? new Date(new Date(session.ended_at).getTime() + RETAIN_AFTER_END_MINUTES * 60_000).toISOString()
@@ -217,6 +381,7 @@ async function describeSession(session: any) {
         garments: await Promise.all((garments || []).map(async (g: any) => ({
             id: g.id,
             source: g.source,
+            category: g.category,
             title: g.title,
             productUrl: g.product_url,
             imageUrl: await signed(g.image_path),
@@ -310,9 +475,13 @@ function buildPrompt(theme: string) {
 }
 
 async function runLook(look: any, session: any, device: any, garments: any[]) {
-    const fail = (message: string) => admin.from('mirror_looks')
-        .update({ status: 'failed', error: message.slice(0, 500), completed_at: new Date().toISOString() })
-        .eq('id', look.id);
+    const started = Date.now();
+    const fail = (message: string) => {
+        logEvent(device.id, session.id, 'look_failed', { pieces: garments.length, reason: message.slice(0, 80) });
+        return admin.from('mirror_looks')
+            .update({ status: 'failed', error: message.slice(0, 500), completed_at: new Date().toISOString() })
+            .eq('id', look.id);
+    };
 
     try {
         if (!GEMINI_API_KEY) return await fail('Try-on is not configured.');
@@ -378,6 +547,10 @@ async function runLook(look: any, session: any, device: any, garments: any[]) {
         await admin.from('mirror_looks')
             .update({ status: 'succeeded', image_path: path, completed_at: new Date().toISOString() })
             .eq('id', look.id);
+        logEvent(device.id, session.id, 'look_generated', {
+            pieces: garments.length,
+            seconds: Math.round((Date.now() - started) / 1000),
+        });
     } catch (e) {
         console.error('runLook crashed', look.id, e);
         await fail('Something went wrong generating this look.');
@@ -572,6 +745,7 @@ async function handle(req: Request, body: any): Promise<Response> {
             .single();
         if (error) throw new Error(error.message);
         background(sweep());
+        logEvent(device.id, session.id, 'visit_started');
         // The kiosk builds the phone URL from its own origin, so the same code
         // pairs correctly from a laptop in development and a Luma in production.
         return json({ sessionId: session.id, token });
@@ -662,6 +836,13 @@ async function handle(req: Request, body: any): Promise<Response> {
             await admin.from('mirror_sessions')
                 .update({ status: 'ended', ended_at: new Date().toISOString(), person_path: null })
                 .eq('id', session.id);
+            const reason = ['finish', 'idle', 'cancel'].includes(body?.reason) ? body.reason : 'finish';
+            logEvent(device.id, session.id, 'visit_ended', {
+                reason,
+                minutes: Math.round((Date.now() - new Date(session.created_at).getTime()) / 60_000),
+                paired: !!session.phone_seen_at,
+                member: !!session.user_id,
+            });
         }
         return json({ ok: true, retainMinutes: RETAIN_AFTER_END_MINUTES });
     }
@@ -679,28 +860,21 @@ async function handle(req: Request, body: any): Promise<Response> {
 
     if (action === 'garment.upload') {
         const session = await requirePhoneSession(body);
-        const { count } = await admin.from('mirror_garments')
-            .select('id', { count: 'exact', head: true }).eq('session_id', session.id);
-        if ((count || 0) >= MAX_GARMENTS_PER_SESSION) {
+        if (await garmentCount(session.id) >= MAX_GARMENTS_PER_SESSION) {
             throw new HttpError(429, `That's ${MAX_GARMENTS_PER_SESSION} pieces — remove one to add another`, 'garment_limit');
         }
         const image = decodeImage(body?.image);
-        const id = crypto.randomUUID();
-        const path = `sessions/${session.id}/garments/${id}.${image.ext}`;
-        const { error: upError } = await admin.storage.from(BUCKET)
-            .upload(path, image.bytes, { contentType: image.mime });
-        if (upError) throw new Error(upError.message);
-        const title = typeof body?.title === 'string' ? body.title.slice(0, 300) : null;
-        await admin.from('mirror_garments').insert({ id, session_id: session.id, source: 'upload', image_path: path, title });
+        const id = await addGarment(session, image, {
+            source: 'upload',
+            title: typeof body?.title === 'string' ? body.title : null,
+        });
         await touch(session.id);
         return json({ ok: true, garmentId: id });
     }
 
     if (action === 'garment.link') {
         const session = await requirePhoneSession(body);
-        const { count } = await admin.from('mirror_garments')
-            .select('id', { count: 'exact', head: true }).eq('session_id', session.id);
-        if ((count || 0) >= MAX_GARMENTS_PER_SESSION) {
+        if (await garmentCount(session.id) >= MAX_GARMENTS_PER_SESSION) {
             throw new HttpError(429, `That's ${MAX_GARMENTS_PER_SESSION} pieces — remove one to add another`, 'garment_limit');
         }
 
@@ -721,13 +895,10 @@ async function handle(req: Request, body: any): Promise<Response> {
             throw new HttpError(422, "That store's product photo is in a format we can't use yet. Take a screenshot instead.", 'bad_image');
         }
 
-        const id = crypto.randomUUID();
-        const path = `sessions/${session.id}/garments/${id}.${type.ext}`;
-        const { error: upError } = await admin.storage.from(BUCKET)
-            .upload(path, img.bytes, { contentType: type.mime });
-        if (upError) throw new Error(upError.message);
-        await admin.from('mirror_garments').insert({
-            id, session_id: session.id, source: 'link', image_path: path, product_url: page.finalUrl, title,
+        const id = await addGarment(session, { bytes: img.bytes, ...type }, {
+            source: 'link',
+            title,
+            productUrl: page.finalUrl,
         });
         await touch(session.id);
         return json({ ok: true, garmentId: id, title });
@@ -743,6 +914,149 @@ async function handle(req: Request, body: any): Promise<Response> {
         await admin.storage.from(BUCKET).remove([g.image_path]);
         await admin.from('mirror_garments').delete().eq('id', garmentId);
         await touch(session.id);
+        return json({ ok: true });
+    }
+
+    // Taps that only the phone sees. Two kinds only, so this cannot become a
+    // general write path into the events table.
+    if (action === 'event.track') {
+        const session = await requirePhoneSession(body, { active: false });
+        if (body?.type === 'product_link_opened') {
+            logEvent(session.device_id, session.id, 'product_link_opened', { host: hostOf(body?.url) });
+        } else if (body?.type === 'app_cta_tapped') {
+            const where = ['phone_look', 'phone_footer', 'phone_ended'].includes(body?.where) ? body.where : 'other';
+            logEvent(session.device_id, session.id, 'app_cta_tapped', { where });
+        } else {
+            throw new HttpError(400, 'Unknown event');
+        }
+        return json({ ok: true });
+    }
+
+    // ── Emode members (the app) ───────────────────────────────────────────
+    //
+    // Claiming a visit takes two proofs at once: the visit's QR token (this
+    // phone is standing at that mirror) and a signed-in Emode session (this is
+    // whose wardrobe it may read). Neither alone is enough.
+    if (action === 'phone.link') {
+        const user = await requireUser(req);
+        const session = await requirePhoneSession(body);
+        if (session.user_id !== user.id) {
+            await admin.from('mirror_sessions')
+                .update({ user_id: user.id, linked_at: new Date().toISOString() })
+                .eq('id', session.id);
+            logEvent(session.device_id, session.id, 'account_linked');
+        }
+        await touch(session.id);
+        return json({ ok: true });
+    }
+
+    if (action === 'garment.from_wardrobe') {
+        const { user, session } = await requireMemberSession(req, body);
+        const room = MAX_GARMENTS_PER_SESSION - await garmentCount(session.id);
+        if (room <= 0) {
+            throw new HttpError(429, `The mirror holds ${MAX_GARMENTS_PER_SESSION} pieces — remove one to add another`, 'garment_limit');
+        }
+        const urls = (Array.isArray(body?.urls) ? body.urls : [])
+            .filter((u: unknown) => typeof u === 'string' && u.length < 2000)
+            .slice(0, room);
+        if (!urls.length) throw new HttpError(400, 'Choose something from your wardrobe');
+
+        // Matched by URL, scoped to this account. The app's local ids are not
+        // database ids until a sync, but each folder holds a URL once.
+        const { data: assets } = await admin.from('wardrobe_assets')
+            .select('url, name, brand, item_name, purchase_link, wardrobe_folders!inner(user_id, slug, name)')
+            .in('url', urls)
+            .eq('wardrobe_folders.user_id', user.id)
+            .is('removed_at', null);
+
+        const ownStorage = `${Deno.env.get('SUPABASE_URL')}/storage/v1/object/public/`;
+        let added = 0;
+        const skipped: string[] = [];
+        const seen = new Set<string>();
+        for (const asset of assets || []) {
+            if (seen.has(asset.url)) continue;
+            seen.add(asset.url);
+            const label = asset.item_name || asset.name || asset.brand || 'Wardrobe piece';
+            try {
+                let bytes: Uint8Array | null = null;
+                if (asset.url.startsWith(ownStorage)) {
+                    // Emode's own storage: read it directly rather than over HTTP.
+                    const rest = decodeURIComponent(asset.url.slice(ownStorage.length).split('?')[0]);
+                    const bucket = rest.slice(0, rest.indexOf('/'));
+                    const { data } = await admin.storage.from(bucket).download(rest.slice(bucket.length + 1));
+                    if (data) bytes = new Uint8Array(await data.arrayBuffer());
+                } else if (/^https?:\/\//i.test(asset.url)) {
+                    const fetched = await fetchCapped(await assertPublicUrl(asset.url), MAX_IMAGE_BYTES, 'image/webp,image/png,image/jpeg,*/*');
+                    if (!fetched.truncated) bytes = fetched.bytes;
+                }
+                // file:// and anything else only ever existed on one phone.
+                const type = bytes ? sniffImage(bytes) : null;
+                if (!bytes || !type) {
+                    skipped.push(label);
+                    continue;
+                }
+                await addGarment(session, { bytes, ...type }, {
+                    source: 'wardrobe',
+                    title: label,
+                    productUrl: asset.purchase_link,
+                    category: categoryFromFolder(asset.wardrobe_folders?.slug, asset.wardrobe_folders?.name),
+                });
+                added++;
+            } catch (e) {
+                console.warn('wardrobe piece skipped', label, e);
+                skipped.push(label);
+            }
+        }
+        // Asked for but not found in this account's wardrobe at all.
+        for (const u of urls) if (!seen.has(u)) skipped.push('A piece that is no longer in your wardrobe');
+
+        if (added) logEvent(session.device_id, session.id, 'wardrobe_sent', { count: added });
+        await touch(session.id);
+        return json({ ok: true, added, skipped });
+    }
+
+    // Keep a look in the app's own try-on history. The visitor's photo never
+    // moves; only the finished look does, into their own private storage.
+    if (action === 'look.save') {
+        const { user, session } = await requireMemberSession(req, body, { active: false });
+        const lookId = requireUuid(body?.lookId, 'look');
+        const { data: look } = await admin.from('mirror_looks')
+            .select('*').eq('id', lookId).eq('session_id', session.id).maybeSingle();
+        if (!look || look.status !== 'succeeded' || !look.image_path) {
+            throw new HttpError(404, 'That look isn’t ready to save');
+        }
+
+        const cacheKey = `mirror:${look.id}`;
+        const { data: existing } = await admin.from('dressing_room_outfits')
+            .select('id').eq('user_id', user.id).eq('cache_key', cacheKey).maybeSingle();
+        if (existing) return json({ ok: true, alreadySaved: true });
+
+        const { data: file } = await admin.storage.from(BUCKET).download(look.image_path);
+        if (!file) throw new Error('look image missing');
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const type = sniffImage(bytes) || { mime: 'image/png', ext: 'png' };
+        const dest = `generated/${user.id}/mirror_${look.id}.${type.ext}`;
+        const { error: upError } = await admin.storage.from('private-media')
+            .upload(dest, bytes, { contentType: type.mime, upsert: true });
+        if (upError) throw new Error(upError.message);
+
+        const { data: pieces } = await admin.from('mirror_garments')
+            .select('id, title, product_url').in('id', look.garment_ids);
+        const ordered = look.garment_ids
+            .map((id: string) => (pieces || []).find((p: any) => p.id === id))
+            .filter(Boolean)
+            .map((p: any) => ({ title: p.title, productUrl: p.product_url }));
+
+        const { error } = await admin.from('dressing_room_outfits').insert({
+            user_id: user.id,
+            product_ids: [],
+            cache_key: cacheKey,
+            generated_image_url: dest,
+            source: 'mirror',
+            mirror_pieces: ordered,
+        });
+        if (error) throw new Error(error.message);
+        logEvent(session.device_id, session.id, 'look_saved_to_account');
         return json({ ok: true });
     }
 

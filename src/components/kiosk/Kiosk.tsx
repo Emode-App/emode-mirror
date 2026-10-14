@@ -211,7 +211,9 @@ export function Kiosk() {
         }
     };
 
-    const finish = useCallback(async () => {
+    // Why the visit ended goes to the server for the funnel: a visit that ran
+    // out the idle timer and one that finished on purpose are different stories.
+    const finish = useCallback(async (reason: 'finish' | 'idle' | 'cancel' = 'finish') => {
         setIdleLeft(null);
         if (!session) {
             reset();
@@ -223,7 +225,7 @@ export function Kiosk() {
         setStage({ name: 'ending' });
         setEnding({ phoneUrl: url, retainUntil: null });
         try {
-            const r = await call<{ retainMinutes: number }>({ action: 'session.end', sessionId: ended.id });
+            const r = await call<{ retainMinutes: number }>({ action: 'session.end', sessionId: ended.id, reason });
             setEnding({ phoneUrl: url, retainUntil: new Date(Date.now() + r.retainMinutes * 60_000).toISOString() });
         } catch {
             // The server sweep ends it regardless; the screen should not hang.
@@ -256,7 +258,7 @@ export function Kiosk() {
                 return;
             }
             const left = Math.ceil((limit + IDLE_GRACE_MS - idle) / 1000);
-            if (left <= 0) finishRef.current();
+            if (left <= 0) finishRef.current('idle');
             else setIdleLeft(left);
         }, 1000);
         return () => {
@@ -292,7 +294,7 @@ export function Kiosk() {
             screen = <Consent busy={busy} onAccept={accept} onDecline={reset} />;
             break;
         case 'pair':
-            screen = <Pair phoneUrl={phoneUrl} garments={garments} onContinue={openWardrobe} onCancel={finish} />;
+            screen = <Pair phoneUrl={phoneUrl} garments={garments} linked={!!state?.linked} onContinue={openWardrobe} onCancel={() => finish('cancel')} />;
             break;
         case 'wardrobe':
             screen = (
@@ -302,13 +304,14 @@ export function Kiosk() {
                     maxPieces={maxPieces}
                     hasPhoto={!!state?.hasPhoto}
                     hasLooks={!!latestLook}
+                    linked={!!state?.linked}
                     phoneUrl={phoneUrl}
                     error={error}
                     onToggle={toggle}
                     onTryOn={tryOn}
                     onNewPhoto={() => setStage({ name: 'capture' })}
                     onBackToLooks={() => latestLook && setStage({ name: 'result', lookId: latestLook.id })}
-                    onFinish={finish}
+                    onFinish={() => finish('finish')}
                 />
             );
             break;
@@ -346,7 +349,7 @@ export function Kiosk() {
                     onSelectLook={(id) => setStage({ name: 'result', lookId: id })}
                     onChangeOutfit={() => setStage({ name: 'wardrobe' })}
                     onNewPhoto={() => setStage({ name: 'capture' })}
-                    onFinish={finish}
+                    onFinish={() => finish('finish')}
                 />
             ) : null;
             break;
