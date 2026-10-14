@@ -13,7 +13,7 @@ pointed at a person standing in front of a mirror instead of a profile photo.
 
 ```
  Proto Luma (kiosk)             visitor's phone
- https://<host>/?device=KEY     https://<host>/s/<visit>#<token>   ← from the QR code
+ https://mirror.emode.style/?device=KEY     https://mirror.emode.style/s/<visit>#<token>   ← from the QR code
         │                                │
         └──────────────┬─────────────────┘
                        ▼
@@ -39,6 +39,12 @@ So this is a Next.js site. Source: Proto's developer docs, *App Development*.
 | `supabase/migrations` | Schema. Already applied to the live project. |
 | `scripts/smoke.mjs` | End-to-end API check. `--generate` runs one real look. |
 | `scripts/register-device.mjs` | Make a key for a new screen. |
+
+## Where it runs
+
+**https://mirror.emode.style** — Vercel project `emode-mirror` (team *logical*),
+deploying from `main` on every push. The `*.vercel.app` URLs sit behind Vercel's
+login; the Luma and visitors' phones use the custom domain.
 
 ## Running it
 
@@ -66,7 +72,7 @@ and the service role; the browser only ever sends the public anon key.
 
 ## Putting it on the Luma
 
-1. **Calibrate first.** Open `https://<host>/calibrate?device=<LUMA_KEY>` on the
+1. **Calibrate first.** Open `https://mirror.emode.style/calibrate?device=<LUMA_KEY>` on the
    Luma through the [Proto App Launcher](http://protoapps.protohologram.com/). It
    answers the three things Proto's docs don't:
    - **Which colour reads as empty space** — black or white. The mirror uses it
@@ -79,7 +85,7 @@ and the service role; the browser only ever sends the public anon key.
    - **Rotation**, if the camera is mounted on its side.
 
    Settings save on that screen.
-2. **Launch URL:** `https://<host>/?device=<LUMA_KEY>`.
+2. **Launch URL:** `https://mirror.emode.style/?device=<LUMA_KEY>`.
 3. When submitting to Proto, ask for **Include Serial Number** (adds
    `protoSerialNumber`, recorded per device) and **Pinch to Zoom: off**.
 
