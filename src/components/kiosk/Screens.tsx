@@ -22,14 +22,17 @@ export function Visitor({ appUrl }: { appUrl: string }) {
             <Wordmark className="relative text-[3.4rem]" />
             <div className="relative mt-auto flex flex-col items-center gap-[1.2rem]">
                 <Eyebrow>Life-size try-on</Eyebrow>
-                <Title className="text-[3rem]">Emode Mirror lives in stores.</Title>
+                <Title className="text-[3rem]">Try on anything.</Title>
                 <p className="max-w-[28rem] text-[1.05rem] leading-[1.45] text-muted">
-                    Find a mirror, scan its code with your phone, and see yourself in anything — your own wardrobe included.
+                    Right here on your phone or laptop — or life-size on an Emode Mirror in store.
                 </p>
             </div>
             <div className="relative mb-[7rem] mt-[3.4rem] flex flex-col items-center gap-[0.9rem]">
-                <a href="https://www.emode.style/mirror"
+                <a href="/try"
                     className="inline-flex min-h-[2.7rem] min-w-[18rem] items-center justify-center rounded-full bg-fg px-[2.2rem] font-display text-[1.05rem] font-semibold text-bg">
+                    Try it on now
+                </a>
+                <a href="https://www.emode.style/mirror" className="font-display text-[1rem] font-semibold text-muted underline underline-offset-[0.3rem]">
                     See how it works
                 </a>
                 <a href={appUrl} className="font-display text-[1rem] font-semibold text-muted underline underline-offset-[0.3rem]">

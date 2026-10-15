@@ -37,6 +37,10 @@ const IDLE_MINUTES = 20;
 const RETAIN_AFTER_END_MINUTES = 60;
 const LOOK_TIMEOUT_MINUTES = 4;
 const SIGNED_URL_SECONDS = 30 * 60;
+// Web mirrors (emode.style) run on visitors' own devices with a key every
+// browser can read, so each visitor gets their own allowance as well.
+const WEB_VISITS_PER_HOUR = 6;
+const WEB_LOOKS_PER_HOUR = 8;
 
 const admin = createClient(
     Deno.env.get('SUPABASE_URL')!,
@@ -172,6 +176,23 @@ function hostOf(url: string | null | undefined): string | null {
     }
 }
 
+/**
+ * A stable, unreadable stand-in for the caller's network address.
+ *
+ * Only used to ration web mirrors per visitor. Salted with a server secret so
+ * the stored value cannot be reversed into an address or matched across
+ * systems, and kept only on the visit row, which is deleted with the visit.
+ */
+async function clientHash(req: Request): Promise<string | null> {
+    const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim()
+        || req.headers.get('cf-connecting-ip')
+        || req.headers.get('x-real-ip')
+        || '';
+    if (!ip) return null;
+    const salt = Deno.env.get('MIRROR_IP_SALT') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+    return (await sha256Hex(`${salt}:${ip}`)).slice(0, 32);
+}
+
 // ────────────────────────────────────────────────────────── categories ────
 
 const CATEGORIES = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'] as const;
@@ -299,7 +320,7 @@ async function requireDevice(req: Request, body: any) {
     if (key.length < 20) throw new HttpError(401, 'This screen is not registered as an Emode Mirror', 'no_device');
 
     const { data: device } = await admin.from('mirror_devices')
-        .select('id, name, location, proto_serial, theme, daily_look_limit, active')
+        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind')
         .eq('key_hash', await sha256Hex(key))
         .maybeSingle();
     if (!device || !device.active) {
@@ -728,7 +749,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         const device = await requireDevice(req, body);
         background(sweep());
         return json({
-            device: { name: device.name, location: device.location, theme: device.theme },
+            device: { name: device.name, location: device.location, theme: device.theme, kind: device.kind },
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
     }
@@ -738,9 +759,27 @@ async function handle(req: Request, body: any): Promise<Response> {
         if (body?.consent !== true || body?.adult !== true) {
             throw new HttpError(400, 'Consent is required before the mirror can take a photo', 'consent_required');
         }
+        let client: string | null = null;
+        if (device.kind === 'web') {
+            client = await clientHash(req);
+            if (client) {
+                const { count } = await admin.from('mirror_sessions')
+                    .select('id', { count: 'exact', head: true })
+                    .eq('client_hash', client)
+                    .gte('created_at', new Date(Date.now() - 3_600_000).toISOString());
+                if ((count || 0) >= WEB_VISITS_PER_HOUR) {
+                    throw new HttpError(429, 'You’ve started a few visits in a row — give it a little while and try again.', 'visitor_limit');
+                }
+            }
+        }
         const token = randomToken();
         const { data: session, error } = await admin.from('mirror_sessions')
-            .insert({ device_id: device.id, upload_token_hash: await sha256Hex(token), consent_at: new Date().toISOString() })
+            .insert({
+                device_id: device.id,
+                upload_token_hash: await sha256Hex(token),
+                consent_at: new Date().toISOString(),
+                client_hash: client,
+            })
             .select('id')
             .single();
         if (error) throw new Error(error.message);
@@ -801,6 +840,16 @@ async function handle(req: Request, body: any): Promise<Response> {
         const inFlight = (existing || []).find((l: any) => l.status === 'pending'
             && Date.now() - new Date(l.created_at).getTime() < LOOK_TIMEOUT_MINUTES * 60_000);
         if (inFlight) return json({ lookId: inFlight.id, alreadyRunning: true });
+
+        if (device.kind === 'web' && session.client_hash) {
+            const { count: recent } = await admin.from('mirror_looks')
+                .select('id, mirror_sessions!inner(client_hash)', { count: 'exact', head: true })
+                .eq('mirror_sessions.client_hash', session.client_hash)
+                .gte('created_at', new Date(Date.now() - 3_600_000).toISOString());
+            if ((recent || 0) >= WEB_LOOKS_PER_HOUR) {
+                throw new HttpError(429, 'That’s a lot of looks for one hour — take a breather and come back soon.', 'visitor_limit');
+            }
+        }
 
         const dayStart = new Date();
         dayStart.setUTCHours(0, 0, 0, 0);
