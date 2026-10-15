@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { Category, Garment, Look } from '@/lib/api';
+import type { Category, Garment, Look, RackItem, StoreInfo } from '@/lib/api';
 import { Qr } from '@/components/Qr';
 import { Wordmark } from '@/components/Wordmark';
 import { Bloom, Eyebrow, KioskButton, Title } from './ui';
@@ -54,17 +54,34 @@ export function Unregistered({ message }: { message: string }) {
     );
 }
 
-export function Attract({ location, onStart }: { location: string | null; onStart: () => void }) {
+/** "at Store", under the Emode wordmark: Emode's mirror, in their store. */
+function StoreLine({ store, className = '' }: { store: StoreInfo; className?: string }) {
+    return (
+        <div className={`flex items-center justify-center gap-[0.7rem] ${className}`}>
+            <span className="font-display text-[0.85rem] uppercase tracking-[0.3em] text-faint">at</span>
+            {store.logoUrl && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={store.logoUrl} alt="" className="h-[1.8rem] w-auto max-w-[8rem] object-contain" />
+            )}
+            <span className="font-display text-[1.15rem] font-semibold tracking-[-0.01em]">{store.name}</span>
+        </div>
+    );
+}
+
+export function Attract({ location, store, onStart }: { location: string | null; store: StoreInfo | null; onStart: () => void }) {
     return (
         <button type="button" onClick={onStart} className="relative flex h-full w-full flex-col items-center text-center">
             <Bloom className="top-[42%]" />
             <Wordmark className="relative mt-[7rem] text-[3.6rem]" />
+            {store && <StoreLine store={store} className="relative mt-[1.6rem]" />}
 
             <div className="relative mt-auto flex flex-col items-center gap-[1.2rem] px-[3rem]">
                 <Eyebrow>A mirror that dresses you</Eyebrow>
                 <Title className="text-[3.6rem]">Try on<br />anything.</Title>
                 <p className="max-w-[28rem] text-[1.05rem] leading-[1.45] text-muted">
-                    Send clothes from your phone. See them on you, right here.
+                    {store?.hasRack
+                        ? `Try on ${store.name}'s pieces — or send your own from your phone.`
+                        : 'Send clothes from your phone. See them on you, right here.'}
                 </p>
             </div>
 
@@ -169,15 +186,20 @@ export function Pair({
     phoneUrl,
     garments,
     linked,
+    store,
     onContinue,
+    onBrowseRack,
     onCancel,
 }: {
     phoneUrl: string;
     garments: Garment[];
     linked: boolean;
+    store: StoreInfo | null;
     onContinue: () => void;
+    onBrowseRack: () => void;
     onCancel: () => void;
 }) {
+    const own = garments.filter((g) => g.source !== 'catalog');
     return (
         <div className="flex h-full flex-col items-center px-[3rem] pt-[6.5rem] text-center">
             <Eyebrow>Step one</Eyebrow>
@@ -190,15 +212,15 @@ export function Pair({
             {linked && <div className="mt-[1.2rem]"><LinkedNote /></div>}
 
             <div className="mt-[2.4rem] w-full">
-                {garments.length === 0 ? (
+                {own.length === 0 ? (
                     <p className="text-[0.95rem] text-faint animate-soft-pulse">Waiting for your first piece…</p>
                 ) : (
                     <>
                         <p className="mb-[0.9rem] font-display text-[0.95rem] font-medium">
-                            {garments.length} {garments.length === 1 ? 'piece' : 'pieces'} added
+                            {own.length} {own.length === 1 ? 'piece' : 'pieces'} added
                         </p>
                         <div className="flex justify-center gap-[0.7rem]">
-                            {garments.slice(-5).map((g) => (
+                            {own.slice(-5).map((g) => (
                                 <div key={g.id} className="w-[5.2rem] animate-rise">
                                     <GarmentTile garment={g} size="sm" />
                                 </div>
@@ -208,8 +230,15 @@ export function Pair({
                 )}
             </div>
 
-            <div className="mt-auto mb-[8rem] flex flex-col items-center gap-[0.9rem]">
-                <KioskButton disabled={garments.length === 0} onClick={onContinue}>Continue</KioskButton>
+            <div className="mt-auto mb-[7rem] flex flex-col items-center gap-[0.9rem]">
+                <KioskButton disabled={own.length === 0} onClick={onContinue}>Continue</KioskButton>
+                {/* A shopper without a phone to hand can still try on what is
+                    in the store -- the rack lives on the mirror itself. */}
+                {store?.hasRack && (
+                    <KioskButton tone="secondary" onClick={onBrowseRack}>
+                        Try on {store.name} pieces — no phone needed
+                    </KioskButton>
+                )}
                 <KioskButton tone="ghost" onClick={onCancel}>Cancel</KioskButton>
             </div>
         </div>
@@ -226,6 +255,28 @@ const CATEGORY_LABELS: Record<Category, string> = {
 };
 const CATEGORY_ORDER: Category[] = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'];
 
+function RackTile({ item, selectedIndex, pending, onToggle }: { item: RackItem; selectedIndex: number; pending: boolean; onToggle: () => void }) {
+    const selected = selectedIndex >= 0;
+    return (
+        <button type="button" onClick={onToggle} disabled={pending}
+            className={`relative flex flex-col overflow-hidden rounded-[0.8rem] bg-surface text-left transition active:scale-[0.97]
+                ${selected ? 'ring-[0.14rem] ring-gold' : 'ring-[0.06rem] ring-line'}`}>
+            <div className="relative aspect-[3/4] w-full bg-white">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={item.imageUrl} alt={item.name} className="absolute inset-0 h-full w-full object-contain p-[0.4rem]" />
+                {selected && (
+                    <span className="absolute right-[0.4rem] top-[0.4rem] grid h-[1.5rem] w-[1.5rem] place-items-center rounded-full bg-gold font-display text-[0.75rem] font-bold text-obsidian">
+                        {selectedIndex + 1}
+                    </span>
+                )}
+                {pending && <span className="absolute inset-0 grid place-items-center bg-white/60 text-[0.6rem] text-obsidian animate-soft-pulse">Adding…</span>}
+            </div>
+            <span className="truncate px-[0.6rem] pt-[0.45rem] text-[0.62rem]">{item.name}</span>
+            {item.price != null && <span className="px-[0.6rem] pb-[0.45rem] text-[0.6rem] text-muted">${Number(item.price).toFixed(2)}</span>}
+        </button>
+    );
+}
+
 export function Wardrobe({
     garments,
     selected,
@@ -235,7 +286,12 @@ export function Wardrobe({
     linked,
     phoneUrl,
     error,
+    store,
+    rack,
+    rackPending,
+    initialTab,
     onToggle,
+    onToggleRack,
     onTryOn,
     onNewPhoto,
     onBackToLooks,
@@ -249,26 +305,39 @@ export function Wardrobe({
     linked: boolean;
     phoneUrl: string;
     error: string | null;
+    store: StoreInfo | null;
+    rack: RackItem[];
+    rackPending: string | null;
+    initialTab: 'rack' | 'all';
     onToggle: (id: string) => void;
+    onToggleRack: (productId: string) => void;
     onTryOn: () => void;
     onNewPhoto: () => void;
     onBackToLooks: () => void;
     onFinish: () => void;
 }) {
-    // Grouped the way the app's wardrobe already is. Tabs only appear once
-    // there is more than one kind of thing to choose between; a piece that has
-    // not been classified yet counts as Other until it is.
-    const [tab, setTab] = useState<Category | 'all'>('all');
+    // The store's rack is its own tab; the shopper's own pieces are grouped the
+    // way the app's wardrobe already is. Rack pieces become garments only once
+    // tapped, so they appear under the rack tab and nowhere else. A piece not
+    // yet classified counts as Other until it is.
+    const own = useMemo(() => garments.filter((g) => g.source !== 'catalog'), [garments]);
+    const hasRack = rack.length > 0;
+    const [tab, setTab] = useState<Category | 'all' | 'rack'>(hasRack ? initialTab : 'all');
     const counts = useMemo(() => {
         const c = new Map<Category, number>();
-        for (const g of garments) c.set(g.category ?? 'other', (c.get(g.category ?? 'other') ?? 0) + 1);
+        for (const g of own) c.set(g.category ?? 'other', (c.get(g.category ?? 'other') ?? 0) + 1);
         return c;
-    }, [garments]);
+    }, [own]);
     const tabs = CATEGORY_ORDER.filter((c) => counts.get(c));
-    const showTabs = tabs.length > 1;
-    const shown = tab === 'all' || !showTabs ? garments : garments.filter((g) => (g.category ?? 'other') === tab);
+    const showTabs = hasRack || tabs.length > 1;
+    const shown = tab === 'all' || tab === 'rack' || tabs.length < 2 ? own : own.filter((g) => (g.category ?? 'other') === tab);
+    const garmentForProduct = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const g of garments) if (g.productId) m.set(g.productId, g.id);
+        return m;
+    }, [garments]);
     useEffect(() => {
-        if (tab !== 'all' && !counts.get(tab)) setTab('all');
+        if (tab !== 'all' && tab !== 'rack' && !counts.get(tab)) setTab('all');
     }, [tab, counts]);
 
     return (
@@ -278,7 +347,7 @@ export function Wardrobe({
                     <Eyebrow>Step two</Eyebrow>
                     <Title className="mt-[0.7rem] text-[2.3rem]">Build your outfit.</Title>
                     <p className="mt-[0.6rem] text-[0.92rem] text-muted">
-                        Tap what you want to wear — up to {maxPieces}.
+                        Tap what you want to wear — up to {maxPieces}{hasRack ? ', from the rack or your own' : ''}.
                     </p>
                 </div>
                 <div className="flex shrink-0 flex-col items-center gap-[0.4rem]">
@@ -292,11 +361,15 @@ export function Wardrobe({
                     {linked && <LinkedNote />}
                     {showTabs && (
                         <div className="flex gap-[0.5rem] overflow-x-auto pb-[0.2rem]">
-                            {(['all', ...tabs] as const).map((c) => (
+                            {([...(hasRack ? ['rack'] : []), 'all', ...(tabs.length > 1 ? tabs : [])] as ('rack' | 'all' | Category)[]).map((c) => (
                                 <button key={c} type="button" onClick={() => setTab(c)}
                                     className={`shrink-0 rounded-full px-[1rem] py-[0.5rem] font-display text-[0.75rem] font-semibold transition
                                         ${tab === c ? 'bg-fg text-bg' : 'border-[0.06rem] border-line text-muted'}`}>
-                                    {c === 'all' ? `All ${garments.length}` : `${CATEGORY_LABELS[c]} ${counts.get(c)}`}
+                                    {c === 'rack'
+                                        ? `${store?.name ?? 'In store'} ${rack.length}`
+                                        : c === 'all'
+                                            ? `${hasRack ? 'Yours' : 'All'} ${own.length}`
+                                            : `${CATEGORY_LABELS[c]} ${counts.get(c)}`}
                                 </button>
                             ))}
                         </div>
@@ -305,9 +378,23 @@ export function Wardrobe({
             )}
 
             <div className="mt-[1.4rem] grid min-h-0 flex-1 auto-rows-min grid-cols-3 gap-[0.9rem] overflow-y-auto pb-[1rem]">
-                {shown.map((g) => (
-                    <GarmentTile key={g.id} garment={g} selectedIndex={selected.indexOf(g.id)} onToggle={() => onToggle(g.id)} />
-                ))}
+                {tab === 'rack'
+                    ? rack.map((item) => {
+                        const gid = garmentForProduct.get(item.id);
+                        return (
+                            <RackTile key={item.id} item={item} pending={rackPending === item.id}
+                                selectedIndex={gid ? selected.indexOf(gid) : -1}
+                                onToggle={() => onToggleRack(item.id)} />
+                        );
+                    })
+                    : shown.map((g) => (
+                        <GarmentTile key={g.id} garment={g} selectedIndex={selected.indexOf(g.id)} onToggle={() => onToggle(g.id)} />
+                    ))}
+                {tab !== 'rack' && own.length === 0 && (
+                    <p className="col-span-3 mt-[2rem] text-center text-[0.85rem] text-faint">
+                        Scan the code to send your own pieces from your phone.
+                    </p>
+                )}
             </div>
 
             {error && <p className="mb-[0.8rem] rounded-[0.6rem] bg-surface px-[1rem] py-[0.7rem] text-center text-[0.85rem]">{error}</p>}
@@ -449,7 +536,7 @@ export function Result({
                         <KioskButton tone="secondary" className="min-w-[13rem]" onClick={onNewPhoto}>New photo</KioskButton>
                     </div>
                     <KioskButton onClick={onFinish}>Finish</KioskButton>
-                    <p className="text-[0.7rem] text-faint">Your looks are waiting on your phone.</p>
+                    <p className="text-[0.7rem] text-faint">When you finish, scan the code to take your looks home.</p>
                 </div>
             </div>
         </div>
@@ -482,7 +569,7 @@ export function Ending({ phoneUrl, retainUntil, onDone }: { phoneUrl: string | n
             {phoneUrl && (
                 <div className="relative mt-[2.6rem] flex flex-col items-center gap-[0.6rem]">
                     <Qr value={phoneUrl} className="w-[8rem] p-[0.5rem]" />
-                    <span className="text-[0.6rem] uppercase tracking-[0.22em] text-faint">Lost the page? Scan again</span>
+                    <span className="text-[0.6rem] uppercase tracking-[0.22em] text-faint">Scan to take your looks home</span>
                 </div>
             )}
             <div className="relative mt-auto mb-[8rem] flex flex-col items-center gap-[0.6rem]">

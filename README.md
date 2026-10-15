@@ -108,6 +108,41 @@ and the service role; the browser only ever sends the public anon key.
   taps, product links opened — with no people in it. It's the funnel for Emode
   and the usage report for a store.
 
+## Stores — Emode Mirror in a retailer's shop
+
+A **store** owns its mirrors, its branding on them, and a private dashboard.
+
+- **On the Luma:** "EMODE. MIRROR — at [Store]" on the welcome screen, with the
+  store's logo if it has one. Emode stays the brand; the store is the venue.
+- **The store's rack:** the active listings of the store's Emode Business
+  account show on the mirror as their own tab. Shoppers can try those on with
+  **no phone at all** ("Try on [Store] pieces — no phone needed" on the pairing
+  screen), or mix them with what they send from their phone. The store manages
+  its rack where it already manages its shop: in the Emode app.
+- **The dashboard:** `mirror.emode.style/store/<id>#<token>` — visits, looks,
+  how many shoppers used their phone, which rack pieces got tried most, which
+  other stores' products shoppers brought, and whether each mirror is online
+  (mirrors check in every 5 minutes). Counts only; no shopper is identifiable.
+  A private link rather than a login, so a store's team doesn't need Emode
+  accounts.
+
+**Setting up a store:**
+
+```bash
+node scripts/create-store.mjs "Store name" --owner @theirEmodeHandle [--logo https://…/logo.png]
+#   → prints the dashboard link (once) and SQL; run the SQL in Supabase
+node scripts/register-device.mjs "Store name — Front window" "City, ST" --store <store id>
+#   → prints the mirror's launch URL (once) and SQL; run it, put the URL on the Luma
+```
+
+`--owner` is optional — a store without one gets a mirror with no rack, and the
+owner can be set later. Test the store side end to end with
+`node scripts/smoke-store.mjs [--generate]` (the Dev laptop belongs to a test
+store whose rack is a real Business account's listings).
+
+Not built yet: stores adding their own mirrors without us, and billing. Both
+wait for a first pilot store.
+
 ## Privacy — the rules the code enforces
 
 - Nobody is photographed without tapping a consent screen that says what
@@ -149,14 +184,14 @@ when a link fails.
   Watch for it.
 - The kiosk polls for updates every 1.5–2s rather than using Realtime — more
   forgiving of venue Wi-Fi. Fine at this scale.
-- No admin dashboard yet. Devices are registered with a script and SQL.
+- Stores and mirrors are set up with scripts plus SQL; there is no self-serve
+  admin yet.
 
 ## Next
 
 1. Real-face testing on the Luma; tune the prompt.
-2. `emode.style/mirror` landing + retailer inquiry page (website repo — see
-   `docs/website-handoff.md`). The `mirror_inquiries` table already exists.
+2. First pilot store: real rack, real dashboard link, then billing per mirror.
 3. Animate a look into a short video (Runway Aleph) — a "bring it to life" button
    on the result screen.
-4. Device admin: register screens, see usage, set branding per retailer.
+4. Self-serve store admin: add mirrors, upload a logo, rotate the dashboard link.
 5. Real-time try-on.

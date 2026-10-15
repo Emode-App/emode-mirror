@@ -245,10 +245,11 @@ async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: strin
 
 /** Store a piece's image and record it on the visit. Shared by every way a piece arrives. */
 async function addGarment(session: any, image: { bytes: Uint8Array; mime: string; ext: string }, fields: {
-    source: 'upload' | 'link' | 'wardrobe';
+    source: 'upload' | 'link' | 'wardrobe' | 'catalog';
     title?: string | null;
     productUrl?: string | null;
     category?: Category | null;
+    productId?: string | null;
 }) {
     const id = crypto.randomUUID();
     const path = `sessions/${session.id}/garments/${id}.${image.ext}`;
@@ -263,6 +264,7 @@ async function addGarment(session: any, image: { bytes: Uint8Array; mime: string
         title: fields.title ? String(fields.title).slice(0, 300) : null,
         product_url: fields.productUrl || null,
         category: fields.category || null,
+        product_id: fields.productId || null,
     });
     if (error) throw new Error(error.message);
     if (!fields.category) background(classifyGarment(id, image.bytes, image.mime));
@@ -278,6 +280,47 @@ async function garmentCount(sessionId: string) {
     const { count } = await admin.from('mirror_garments')
         .select('id', { count: 'exact', head: true }).eq('session_id', sessionId);
     return count || 0;
+}
+
+// ───────────────────────────────────────────────────────────────── stores ────
+
+async function storeOf(device: any) {
+    if (!device?.store_id) return null;
+    const { data } = await admin.from('mirror_stores')
+        .select('id, name, logo_url, owner_id').eq('id', device.store_id).maybeSingle();
+    return data;
+}
+
+/** A store's rack: the active listings of the Emode Business account behind it. */
+async function rackFor(store: any, limit = 60) {
+    if (!store?.owner_id) return [];
+    const { data } = await admin.from('products')
+        .select('id, name, price, image_urls, external_links, created_at')
+        .eq('seller_id', store.owner_id)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+    return (data || []).filter((p: any) => Array.isArray(p.image_urls) && typeof p.image_urls[0] === 'string');
+}
+
+/**
+ * The bytes of an image that lives in Emode's own storage or on the open web.
+ * Own storage is read directly; anything else goes through the same
+ * public-address-only fetch as product links. Anything else (file://) is null.
+ */
+async function fetchImage(url: string): Promise<Uint8Array | null> {
+    const own = `${Deno.env.get('SUPABASE_URL')}/storage/v1/object/public/`;
+    if (url.startsWith(own)) {
+        const rest = decodeURIComponent(url.slice(own.length).split('?')[0]);
+        const bucket = rest.slice(0, rest.indexOf('/'));
+        const { data } = await admin.storage.from(bucket).download(rest.slice(bucket.length + 1));
+        return data ? new Uint8Array(await data.arrayBuffer()) : null;
+    }
+    if (/^https?:\/\//i.test(url)) {
+        const fetched = await fetchCapped(await assertPublicUrl(url), MAX_IMAGE_BYTES, 'image/webp,image/png,image/jpeg,*/*');
+        return fetched.truncated ? null : fetched.bytes;
+    }
+    return null;
 }
 
 // ──────────────────────────────────────────────────────────────── members ────
@@ -320,7 +363,7 @@ async function requireDevice(req: Request, body: any) {
     if (key.length < 20) throw new HttpError(401, 'This screen is not registered as an Emode Mirror', 'no_device');
 
     const { data: device } = await admin.from('mirror_devices')
-        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind')
+        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind, store_id')
         .eq('key_hash', await sha256Hex(key))
         .maybeSingle();
     if (!device || !device.active) {
@@ -403,6 +446,7 @@ async function describeSession(session: any) {
             id: g.id,
             source: g.source,
             category: g.category,
+            productId: g.product_id,
             title: g.title,
             productUrl: g.product_url,
             imageUrl: await signed(g.image_path),
@@ -571,6 +615,16 @@ async function runLook(look: any, session: any, device: any, garments: any[]) {
         logEvent(device.id, session.id, 'look_generated', {
             pieces: garments.length,
             seconds: Math.round((Date.now() - started) / 1000),
+            // What was tried, for the store's dashboard. Public products only:
+            // a store's own listing, or a product page's store and name. A
+            // shopper's screenshots and the names of their wardrobe pieces are
+            // theirs, and are recorded as nothing but their kind.
+            items: garments.map((g: any) => ({
+                source: g.source,
+                productId: g.source === 'catalog' ? g.product_id : null,
+                host: g.source === 'link' ? hostOf(g.product_url) : null,
+                title: g.source === 'link' || g.source === 'catalog' ? (g.title || '').slice(0, 80) : null,
+            })),
         });
     } catch (e) {
         console.error('runLook crashed', look.id, e);
@@ -748,8 +802,11 @@ async function handle(req: Request, body: any): Promise<Response> {
     if (action === 'device.hello') {
         const device = await requireDevice(req, body);
         background(sweep());
+        const store = await storeOf(device);
+        const rack = store ? await rackFor(store, 1) : [];
         return json({
             device: { name: device.name, location: device.location, theme: device.theme, kind: device.kind },
+            store: store ? { name: store.name, logoUrl: store.logo_url, hasRack: rack.length > 0 } : null,
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
     }
@@ -827,7 +884,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         ids.forEach((id) => requireUuid(id, 'garment'));
 
         const { data: garments } = await admin.from('mirror_garments')
-            .select('id, image_path, title').eq('session_id', session.id).in('id', ids);
+            .select('id, image_path, title, source, product_url, product_id').eq('session_id', session.id).in('id', ids);
         if (!garments || garments.length !== ids.length) throw new HttpError(400, 'Some of those pieces are no longer here');
         // Keep the order the visitor picked them in.
         garments.sort((a: any, b: any) => ids.indexOf(a.id) - ids.indexOf(b.id));
@@ -894,6 +951,171 @@ async function handle(req: Request, body: any): Promise<Response> {
             });
         }
         return json({ ok: true, retainMinutes: RETAIN_AFTER_END_MINUTES });
+    }
+
+    // ── A store's rack, tried on without a phone ──────────────────────────
+    if (action === 'catalog.list') {
+        const device = await requireDevice(req, body);
+        const rack = await rackFor(await storeOf(device));
+        return json({
+            items: rack.map((p: any) => ({
+                id: p.id,
+                name: p.name,
+                price: p.price,
+                imageUrl: p.image_urls[0],
+            })),
+        });
+    }
+
+    if (action === 'garment.from_catalog') {
+        const device = await requireDevice(req, body);
+        const session = await requireKioskSession(device, body?.sessionId);
+        const productId = requireUuid(body?.productId, 'product');
+        const store = await storeOf(device);
+        if (!store?.owner_id) throw new HttpError(404, 'This mirror has no rack');
+
+        // Picking the same piece twice should not fill the mirror with copies.
+        const { data: existing } = await admin.from('mirror_garments')
+            .select('id').eq('session_id', session.id).eq('product_id', productId).maybeSingle();
+        if (existing) return json({ ok: true, garmentId: existing.id });
+
+        if (await garmentCount(session.id) >= MAX_GARMENTS_PER_SESSION) {
+            throw new HttpError(429, `That's ${MAX_GARMENTS_PER_SESSION} pieces — take one off to add another`, 'garment_limit');
+        }
+        const { data: product } = await admin.from('products')
+            .select('id, name, image_urls, external_links, seller_id, is_active')
+            .eq('id', productId).maybeSingle();
+        // Only this store's own live listings, whatever id the screen sends.
+        if (!product || product.seller_id !== store.owner_id || !product.is_active) {
+            throw new HttpError(404, 'That piece is no longer on the rack');
+        }
+        const bytes = await fetchImage(product.image_urls?.[0] || '');
+        const type = bytes ? sniffImage(bytes) : null;
+        if (!bytes || !type) throw new HttpError(422, 'That piece’s photo could not be loaded');
+
+        const shopUrl = typeof product.external_links?.website === 'string' ? product.external_links.website : null;
+        const id = await addGarment(session, { bytes, ...type }, {
+            source: 'catalog',
+            title: product.name,
+            productUrl: shopUrl,
+            productId: product.id,
+        });
+        await touch(session.id);
+        return json({ ok: true, garmentId: id });
+    }
+
+    // ── The store's dashboard, by private link ───────────────────────────
+    if (action === 'store.dashboard') {
+        const storeId = requireUuid(body?.storeId, 'store');
+        const token = typeof body?.token === 'string' ? body.token : '';
+        const { data: store } = await admin.from('mirror_stores')
+            .select('id, name, logo_url, owner_id')
+            .eq('id', storeId)
+            .eq('dashboard_token_hash', await sha256Hex(token))
+            .maybeSingle();
+        if (!store || token.length < 20) {
+            throw new HttpError(404, 'That dashboard link isn’t valid. Ask Emode for a new one.', 'bad_link');
+        }
+
+        const days = Math.min(90, Math.max(1, Number(body?.days) || 30));
+        const since = new Date(Date.now() - (days - 1) * 86_400_000);
+        since.setUTCHours(0, 0, 0, 0);
+
+        const { data: devices } = await admin.from('mirror_devices')
+            .select('id, name, location, last_seen_at, active')
+            .eq('store_id', store.id)
+            .order('created_at');
+        const deviceIds = (devices || []).map((d: any) => d.id);
+        const { data: events } = deviceIds.length
+            ? await admin.from('mirror_events')
+                .select('device_id, type, meta, created_at')
+                .in('device_id', deviceIds)
+                .gte('created_at', since.toISOString())
+                .order('created_at')
+                .limit(20000)
+            : { data: [] as any[] };
+
+        const totals = { visits: 0, paired: 0, looks: 0, lookSeconds: 0, appTaps: 0, linkOpens: 0, members: 0 };
+        const perDevice: Record<string, { visits: number; looks: number }> = {};
+        const daily: Record<string, { visits: number; looks: number }> = {};
+        const rackCounts: Record<string, number> = {};
+        const linkCounts: Record<string, { host: string; title: string; count: number }> = {};
+        for (let d = new Date(since); d.getTime() <= Date.now(); d = new Date(d.getTime() + 86_400_000)) {
+            daily[d.toISOString().slice(0, 10)] = { visits: 0, looks: 0 };
+        }
+
+        for (const e of events || []) {
+            const day = String(e.created_at).slice(0, 10);
+            const dev = (perDevice[e.device_id] ??= { visits: 0, looks: 0 });
+            if (e.type === 'visit_started') {
+                totals.visits++;
+                dev.visits++;
+                if (daily[day]) daily[day].visits++;
+            } else if (e.type === 'phone_paired') {
+                totals.paired++;
+            } else if (e.type === 'look_generated') {
+                totals.looks++;
+                totals.lookSeconds += Number(e.meta?.seconds) || 0;
+                dev.looks++;
+                if (daily[day]) daily[day].looks++;
+                for (const item of e.meta?.items || []) {
+                    if (item.productId) rackCounts[item.productId] = (rackCounts[item.productId] || 0) + 1;
+                    if (item.host) {
+                        const key = `${item.host}|${item.title || ''}`;
+                        (linkCounts[key] ??= { host: item.host, title: item.title || '', count: 0 }).count++;
+                    }
+                }
+            } else if (e.type === 'app_cta_tapped') {
+                totals.appTaps++;
+            } else if (e.type === 'product_link_opened') {
+                totals.linkOpens++;
+            } else if (e.type === 'account_linked') {
+                totals.members++;
+            }
+        }
+
+        const topIds = Object.entries(rackCounts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id]) => id);
+        const { data: products } = topIds.length
+            ? await admin.from('products').select('id, name, price, image_urls').in('id', topIds)
+            : { data: [] as any[] };
+
+        return json({
+            store: { name: store.name, logoUrl: store.logo_url, hasRack: !!store.owner_id },
+            days,
+            totals: {
+                visits: totals.visits,
+                pairedRate: totals.visits ? totals.paired / totals.visits : 0,
+                looks: totals.looks,
+                looksPerVisit: totals.visits ? totals.looks / totals.visits : 0,
+                avgLookSeconds: totals.looks ? Math.round(totals.lookSeconds / totals.looks) : 0,
+                appTaps: totals.appTaps,
+                linkOpens: totals.linkOpens,
+                members: totals.members,
+            },
+            mirrors: (devices || []).map((d: any) => ({
+                name: d.name,
+                location: d.location,
+                active: d.active,
+                // The kiosk checks in every few minutes while it is on, so a
+                // quiet quarter of an hour means it is off or offline.
+                online: !!d.last_seen_at && Date.now() - new Date(d.last_seen_at).getTime() < 15 * 60_000,
+                lastSeenAt: d.last_seen_at,
+                visits: perDevice[d.id]?.visits || 0,
+                looks: perDevice[d.id]?.looks || 0,
+            })),
+            daily: Object.entries(daily).map(([date, v]) => ({ date, ...v })),
+            topRack: topIds.map((id) => {
+                const p = (products || []).find((x: any) => x.id === id);
+                return {
+                    id,
+                    name: p?.name || 'A piece no longer listed',
+                    price: p?.price ?? null,
+                    imageUrl: p?.image_urls?.[0] || null,
+                    tries: rackCounts[id],
+                };
+            }),
+            topLinks: Object.values(linkCounts).sort((a, b) => b.count - a.count).slice(0, 10),
+        });
     }
 
     // ── Phone ─────────────────────────────────────────────────────────────

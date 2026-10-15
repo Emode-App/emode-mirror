@@ -15,7 +15,9 @@ export type Category = 'tops' | 'outerwear' | 'bottoms' | 'shoes' | 'accessories
 
 export interface Garment {
     id: string;
-    source: 'upload' | 'link' | 'wardrobe';
+    source: 'upload' | 'link' | 'wardrobe' | 'catalog';
+    /** For pieces from a store's rack: the listing they came from. */
+    productId: string | null;
     /** Filled in a few seconds after an upload or link, by a classifier; immediate for wardrobe pieces. */
     category: Category | null;
     title: string | null;
@@ -49,9 +51,44 @@ export interface PhoneState extends SessionState {
     limits: { garmentsPerSession: number };
 }
 
+export interface StoreInfo {
+    name: string;
+    logoUrl: string | null;
+    /** The store's Emode Business account has live listings to try on. */
+    hasRack: boolean;
+}
+
 export interface DeviceHello {
     device: { name: string; location: string | null; theme: Theme };
+    /** The store this mirror belongs to, if any. Null for Emode's own mirrors. */
+    store: StoreInfo | null;
     limits: { garmentsPerLook: number; idleMinutes: number; retainMinutes: number };
+}
+
+export interface RackItem {
+    id: string;
+    name: string;
+    price: number | null;
+    imageUrl: string;
+}
+
+export interface StoreDashboard {
+    store: { name: string; logoUrl: string | null; hasRack: boolean };
+    days: number;
+    totals: {
+        visits: number;
+        pairedRate: number;
+        looks: number;
+        looksPerVisit: number;
+        avgLookSeconds: number;
+        appTaps: number;
+        linkOpens: number;
+        members: number;
+    };
+    mirrors: { name: string; location: string | null; active: boolean; online: boolean; lastSeenAt: string | null; visits: number; looks: number }[];
+    daily: { date: string; visits: number; looks: number }[];
+    topRack: { id: string; name: string; price: number | null; imageUrl: string | null; tries: number }[];
+    topLinks: { host: string; title: string; count: number }[];
 }
 
 export class MirrorError extends Error {

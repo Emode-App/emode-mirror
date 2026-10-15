@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { mirrorCall, MirrorError, type DeviceHello, type SessionState, type Theme } from '@/lib/api';
+import { mirrorCall, MirrorError, type DeviceHello, type RackItem, type SessionState, type Theme } from '@/lib/api';
 import { readLaunchParams, settings, type LaunchParams } from '@/lib/settings';
 import { Capture } from './Capture';
 import { Attract, Consent, Ending, Generating, Pair, Result, StillThere, Unregistered, Visitor, Wardrobe } from './Screens';
@@ -43,6 +43,10 @@ export function Kiosk() {
     const [error, setError] = useState<string | null>(null);
     const [idleLeft, setIdleLeft] = useState<number | null>(null);
     const [ending, setEnding] = useState<{ phoneUrl: string | null; retainUntil: string | null } | null>(null);
+    // The store's rack, when this mirror belongs to a store that has one.
+    const [rack, setRack] = useState<RackItem[]>([]);
+    const [rackPending, setRackPending] = useState<string | null>(null);
+    const [wardrobeTab, setWardrobeTab] = useState<'rack' | 'all'>('all');
 
     const lastTouch = useRef(Date.now());
     const autoSelected = useRef(false);
@@ -158,14 +162,55 @@ export function Kiosk() {
         }
     };
 
-    const openWardrobe = () => {
-        // First time in: everything they sent is probably what they want on,
-        // so start with it all selected rather than make them tap each piece.
-        if (!autoSelected.current && state) {
+    useEffect(() => {
+        if (!session || !hello?.store?.hasRack) return;
+        call<{ items: RackItem[] }>({ action: 'catalog.list' })
+            .then((r) => setRack(r.items))
+            .catch(() => setRack([]));
+    }, [session, hello, call]);
+
+    // Checks in every few minutes while it is on, so a store's dashboard can
+    // tell a mirror that is quiet from one that is switched off.
+    useEffect(() => {
+        if (!hello || !launch?.deviceKey) return;
+        const id = setInterval(() => {
+            mirrorCall({ action: 'device.hello' }, launch.deviceKey).catch(() => {});
+        }, 5 * 60_000);
+        return () => clearInterval(id);
+    }, [hello, launch]);
+
+    const openWardrobe = (tab: 'rack' | 'all' = 'all') => {
+        // First time in from the phone: everything they sent is probably what
+        // they want on, so start with it all selected rather than make them
+        // tap each piece. Arriving at the rack, nothing is chosen for them.
+        if (!autoSelected.current && state && tab === 'all') {
             autoSelected.current = true;
-            setSelected(state.garments.slice(-maxPieces).map((g) => g.id));
+            setSelected(state.garments.filter((g) => g.source !== 'catalog').slice(-maxPieces).map((g) => g.id));
         }
+        setWardrobeTab(tab);
         setStage({ name: 'wardrobe' });
+    };
+
+    // A rack piece becomes a garment on first tap; after that it toggles like
+    // any other piece.
+    const toggleRack = async (productId: string) => {
+        if (!session) return;
+        const existing = state?.garments.find((g) => g.productId === productId);
+        if (existing) return toggle(existing.id);
+        if (selected.length >= maxPieces) {
+            setError(`Up to ${maxPieces} pieces at once — tap one to take it off.`);
+            return;
+        }
+        setRackPending(productId);
+        try {
+            const r = await call<{ garmentId: string }>({ action: 'garment.from_catalog', sessionId: session.id, productId });
+            setSelected((sel) => (sel.includes(r.garmentId) ? sel : [...sel, r.garmentId].slice(0, maxPieces)));
+            setState(await call<SessionState>({ action: 'session.state', sessionId: session.id }));
+        } catch (e) {
+            setError((e as Error).message);
+        } finally {
+            setRackPending(null);
+        }
     };
 
     const toggle = (id: string) => {
@@ -295,13 +340,23 @@ export function Kiosk() {
             screen = <Unregistered message={stage.message} />;
             break;
         case 'attract':
-            screen = <Attract location={hello?.device.location ?? null} onStart={() => setStage({ name: 'consent' })} />;
+            screen = <Attract location={hello?.device.location ?? null} store={hello?.store ?? null} onStart={() => setStage({ name: 'consent' })} />;
             break;
         case 'consent':
             screen = <Consent busy={busy} onAccept={accept} onDecline={reset} />;
             break;
         case 'pair':
-            screen = <Pair phoneUrl={phoneUrl} garments={garments} linked={!!state?.linked} onContinue={openWardrobe} onCancel={() => finish('cancel')} />;
+            screen = (
+                <Pair
+                    phoneUrl={phoneUrl}
+                    garments={garments}
+                    linked={!!state?.linked}
+                    store={hello?.store ?? null}
+                    onContinue={() => openWardrobe('all')}
+                    onBrowseRack={() => openWardrobe('rack')}
+                    onCancel={() => finish('cancel')}
+                />
+            );
             break;
         case 'wardrobe':
             screen = (
@@ -314,7 +369,12 @@ export function Kiosk() {
                     linked={!!state?.linked}
                     phoneUrl={phoneUrl}
                     error={error}
+                    store={hello?.store ?? null}
+                    rack={rack}
+                    rackPending={rackPending}
+                    initialTab={wardrobeTab}
                     onToggle={toggle}
+                    onToggleRack={toggleRack}
                     onTryOn={tryOn}
                     onNewPhoto={() => setStage({ name: 'capture' })}
                     onBackToLooks={() => latestLook && setStage({ name: 'result', lookId: latestLook.id })}
