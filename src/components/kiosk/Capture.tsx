@@ -11,6 +11,18 @@ type Phase = 'starting' | 'live' | 'countdown' | 'review' | 'error';
 // enough for the camera to see them head to toe. Three seconds was not
 // enough; ten is, with room to turn around and settle.
 const STEP_BACK_SECONDS = 10;
+// Pressed on the phone, the shopper is already standing back: just long
+// enough to lower the phone and stand still.
+const PHONE_SECONDS = 3;
+
+/** The phone that scanned the code, working as a second camera button. */
+export interface RemoteShutter {
+    paired: boolean;
+    /** Tell the phone the camera is (or is no longer) waiting for the photo. */
+    setOpen: (open: boolean) => void;
+    /** Whether the phone's button was pressed since the last ask. */
+    poll: () => Promise<boolean>;
+}
 
 /**
  * A short tone, so someone walking backwards hears the photo coming without
@@ -44,12 +56,14 @@ export function Capture({
     cameraId,
     rotation,
     busy,
+    remote,
     onUse,
     onCancel,
 }: {
     cameraId: string | null;
     rotation: Rotation;
     busy: boolean;
+    remote?: RemoteShutter;
     onUse: (dataUrl: string) => void;
     onCancel: () => void;
 }) {
@@ -58,6 +72,12 @@ export function Capture({
     const [phase, setPhase] = useState<Phase>('starting');
     const [count, setCount] = useState(STEP_BACK_SECONDS);
     const audioRef = useRef<AudioContext | null>(null);
+    const [fromPhone, setFromPhone] = useState(false);
+    const remoteRef = useRef(remote);
+    useEffect(() => {
+        remoteRef.current = remote;
+    });
+    const paired = !!remote?.paired;
     const [still, setStill] = useState<string | null>(null);
     const [flash, setFlash] = useState(0);
     const [error, setError] = useState<string | null>(null);
@@ -113,7 +133,7 @@ export function Capture({
         audioRef.current?.close().catch(() => {});
     }, []);
 
-    const startCountdown = () => {
+    const startCountdown = useCallback((seconds: number, phone: boolean) => {
         if (!audioRef.current) {
             try {
                 const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -123,9 +143,29 @@ export function Capture({
             }
         }
         audioRef.current?.resume().catch(() => {});
-        setCount(STEP_BACK_SECONDS);
+        setFromPhone(phone);
+        setCount(seconds);
         setPhase('countdown');
-    };
+    }, []);
+
+    // While the camera is waiting, the paired phone shows its own button.
+    // Either button works; whichever is pressed first takes the photo.
+    const waiting = phase === 'live';
+    useEffect(() => {
+        if (!paired) return;
+        remoteRef.current?.setOpen(waiting);
+        if (!waiting) return;
+        let stopped = false;
+        const id = setInterval(async () => {
+            const pressed = await (remoteRef.current?.poll() ?? Promise.resolve(false)).catch(() => false);
+            if (pressed && !stopped) startCountdown(PHONE_SECONDS, true);
+        }, 1000);
+        return () => {
+            stopped = true;
+            clearInterval(id);
+        };
+    }, [waiting, paired, startCountdown]);
+    useEffect(() => () => remoteRef.current?.setOpen(false), []);
 
     const rotated = rotation === 90 || rotation === 270;
 
@@ -167,12 +207,19 @@ export function Capture({
                         <p className="mt-[0.4rem] text-[0.95rem] text-white/80">
                             You&apos;ll have {STEP_BACK_SECONDS} seconds to get your whole body in the frame, head to toe.
                         </p>
+                        {paired && (
+                            <p className="mx-auto mt-[0.9rem] max-w-[30rem] rounded-full bg-white/12 px-[1.2rem] py-[0.5rem] text-[0.9rem] text-white">
+                                Or step back first and tap <span className="font-semibold">Take my photo</span> on your phone.
+                            </p>
+                        )}
                     </>
                 )}
                 {phase === 'countdown' && (
                     <>
-                        <p className="font-display text-[2.6rem] font-semibold tracking-[-0.02em]">Step back</p>
-                        <p className="mt-[0.4rem] text-[1.1rem] text-white/85">Head to toe in the frame. Stand still.</p>
+                        <p className="font-display text-[2.6rem] font-semibold tracking-[-0.02em]">{fromPhone ? 'Hold still' : 'Step back'}</p>
+                        <p className="mt-[0.4rem] text-[1.1rem] text-white/85">
+                            {fromPhone ? 'Look at the mirror.' : 'Head to toe in the frame. Stand still.'}
+                        </p>
                     </>
                 )}
                 {phase === 'review' && (
@@ -195,7 +242,7 @@ export function Capture({
             <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-[1rem] bg-gradient-to-t from-black/75 to-transparent px-[3rem] pb-[5rem] pt-[8rem]">
                 {phase === 'live' && (
                     <>
-                        <KioskButton tone="light" onClick={startCountdown}>
+                        <KioskButton tone="light" onClick={() => startCountdown(STEP_BACK_SECONDS, false)}>
                             Take my photo
                         </KioskButton>
                         <KioskButton tone="ghost-light" onClick={onCancel}>Back</KioskButton>

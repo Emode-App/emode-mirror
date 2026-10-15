@@ -378,7 +378,7 @@ export function Wardrobe({
                 <div className="mt-[1.4rem] flex flex-col gap-[0.9rem]">
                     {linked && <LinkedNote />}
                     {showTabs && (
-                        <div className="flex gap-[0.5rem] overflow-x-auto pb-[0.2rem]">
+                        <div className="flex gap-[0.5rem] overflow-x-auto pb-[0.2rem] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                             {([...(hasRack ? ['rack'] : []), 'all', ...(tabs.length > 1 ? tabs : [])] as ('rack' | 'all' | Category)[]).map((c) => (
                                 <button key={c} type="button" onClick={() => setTab(c)}
                                     className={`shrink-0 rounded-full px-[1rem] py-[0.5rem] font-display text-[0.75rem] font-semibold transition
@@ -393,7 +393,7 @@ export function Wardrobe({
                         </div>
                     )}
                     {tab === 'rack' && rackTabs.length > 1 && (
-                        <div className="flex gap-[0.4rem] overflow-x-auto pb-[0.2rem]">
+                        <div className="flex gap-[0.4rem] overflow-x-auto pb-[0.2rem] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                             {(['all', ...rackTabs] as (Category | 'all')[]).map((c) => (
                                 <button key={c} type="button" onClick={() => pickRackCategory(c)}
                                     className={`shrink-0 rounded-full px-[0.85rem] py-[0.4rem] text-[0.68rem] font-semibold transition

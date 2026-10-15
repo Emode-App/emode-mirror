@@ -40,6 +40,10 @@ export interface SessionState {
     hasPhoto: boolean;
     /** An Emode account has claimed this visit from the app. Never says whose. */
     linked: boolean;
+    /** A phone has scanned this visit's code, so it can work as the camera button. */
+    phonePaired: boolean;
+    /** The mirror's camera is waiting for the photo; the phone may press the button. */
+    cameraOpen: boolean;
     endedAt: string | null;
     retainUntil: string | null;
     garments: Garment[];

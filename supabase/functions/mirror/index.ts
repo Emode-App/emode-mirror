@@ -42,6 +42,9 @@ const IDLE_MINUTES = 20;
 const RETAIN_AFTER_END_MINUTES = 60;
 const LOOK_TIMEOUT_MINUTES = 4;
 const SIGNED_URL_SECONDS = 30 * 60;
+// How long the mirror's camera counts as waiting for a photo after it last
+// said so. Longer than anyone stands at the photo screen.
+const CAMERA_OPEN_MINUTES = 5;
 // Web mirrors (emode.style) run on visitors' own devices with a key every
 // browser can read, so each visitor gets their own allowance as well.
 const WEB_VISITS_PER_HOUR = 6;
@@ -679,6 +682,11 @@ async function describeSession(session: any) {
         // Whether an Emode account has claimed the visit. A yes/no only: the
         // kiosk is a public screen and never learns whose account it is.
         linked: !!session.user_id,
+        // A phone has scanned the code, so it can work as the camera button.
+        phonePaired: !!session.phone_seen_at,
+        // The mirror's camera is on and waiting for the photo.
+        cameraOpen: session.status === 'active' && !!session.camera_open_at
+            && now - new Date(session.camera_open_at).getTime() < CAMERA_OPEN_MINUTES * 60_000,
         endedAt: session.ended_at,
         retainUntil: session.ended_at
             ? new Date(new Date(session.ended_at).getTime() + RETAIN_AFTER_END_MINUTES * 60_000).toISOString()
@@ -1109,7 +1117,7 @@ async function handle(req: Request, body: any): Promise<Response> {
             .upload(path, image.bytes, { contentType: image.mime, upsert: true });
         if (error) throw new Error(error.message);
         await admin.from('mirror_sessions')
-            .update({ person_path: path, last_activity_at: new Date().toISOString() })
+            .update({ person_path: path, last_activity_at: new Date().toISOString(), camera_open_at: null, shutter_at: null })
             .eq('id', session.id);
         return json({ ok: true });
     }
@@ -1172,6 +1180,29 @@ async function handle(req: Request, body: any): Promise<Response> {
         // that gets cut, and this way a dropped connection loses nothing.
         background(runLook(look, session, device, garments));
         return json({ lookId: look.id });
+    }
+
+    // The photo screen tells the phone when it is waiting, so the phone can
+    // offer its own "Take my photo" button, and asks whether it was pressed.
+    if (action === 'session.camera') {
+        const device = await requireDevice(req, body);
+        const session = await requireKioskSession(device, body?.sessionId);
+        await admin.from('mirror_sessions')
+            .update({ camera_open_at: body?.open === true ? new Date().toISOString() : null, shutter_at: null })
+            .eq('id', session.id);
+        return json({ ok: true });
+    }
+
+    if (action === 'session.shutter') {
+        const device = await requireDevice(req, body);
+        const id = requireUuid(body?.sessionId, 'session');
+        // Consumed as it is read, so one press on the phone is one photo.
+        const { data } = await admin.from('mirror_sessions')
+            .update({ shutter_at: null })
+            .eq('id', id).eq('device_id', device.id).eq('status', 'active')
+            .not('shutter_at', 'is', null)
+            .select('id');
+        return json({ pressed: !!data?.length });
     }
 
     if (action === 'session.end') {
@@ -1466,6 +1497,19 @@ async function handle(req: Request, body: any): Promise<Response> {
         });
         await touch(session.id);
         return json({ ok: true, garmentId: id, title });
+    }
+
+    // The phone as the camera button, for a shopper already standing back.
+    // Only while the mirror's camera is waiting; the mirror still shows the
+    // photo for the shopper to use or retake before anything is kept.
+    if (action === 'phone.shutter') {
+        const session = await requirePhoneSession(body);
+        const open = !!session.camera_open_at
+            && Date.now() - new Date(session.camera_open_at).getTime() < CAMERA_OPEN_MINUTES * 60_000;
+        if (!open) throw new HttpError(409, 'The mirror isn’t ready for a photo right now.', 'camera_closed');
+        await admin.from('mirror_sessions').update({ shutter_at: new Date().toISOString() }).eq('id', session.id);
+        await touch(session.id);
+        return json({ ok: true });
     }
 
     if (action === 'garment.remove') {

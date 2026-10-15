@@ -393,6 +393,11 @@ export function Kiosk() {
                     cameraId={camera.id}
                     rotation={camera.rotation}
                     busy={busy}
+                    remote={session ? {
+                        paired: !!state?.phonePaired,
+                        setOpen: (open) => { call({ action: 'session.camera', sessionId: session.id, open }).catch(() => {}); },
+                        poll: () => call<{ pressed: boolean }>({ action: 'session.shutter', sessionId: session.id }).then((r) => r.pressed),
+                    } : undefined}
                     onUse={submitPhoto}
                     onCancel={() => setStage({ name: 'wardrobe' })}
                 />

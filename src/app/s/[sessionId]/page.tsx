@@ -23,6 +23,7 @@ export default function PhoneCompanion() {
     const [progress, setProgress] = useState<string | null>(null);
     const [link, setLink] = useState('');
     const [linkBusy, setLinkBusy] = useState(false);
+    const [shot, setShot] = useState(false);
     const fileRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -107,6 +108,21 @@ export default function PhoneCompanion() {
         }
     };
 
+    // The phone as the camera button: the shopper steps back, taps here, and
+    // the mirror counts down from three and takes the photo.
+    const shoot = async () => {
+        setShot(true);
+        setError(null);
+        try {
+            await call({ action: 'phone.shutter' });
+            setTimeout(() => setShot(false), 6000);
+        } catch (e) {
+            setShot(false);
+            setError((e as Error).message);
+        }
+        refresh();
+    };
+
     const remove = async (id: string) => {
         setState((s) => (s ? { ...s, garments: s.garments.filter((g) => g.id !== id) } : s));
         try {
@@ -159,6 +175,19 @@ export default function PhoneCompanion() {
             </div>
 
             {error && <p className="mt-5 rounded-xl bg-obsidian px-4 py-3 text-center text-sm text-cream">{error}</p>}
+
+            {active && (state.cameraOpen || shot) && (
+                <section className="mt-6 rounded-2xl bg-obsidian p-5 text-center text-cream animate-rise">
+                    <p className="text-xs font-semibold uppercase tracking-[0.25em] text-gold">The mirror is ready for your photo</p>
+                    <p className="mt-2 text-sm text-cream/80">
+                        Step back until the mirror can see you head to toe, then tap. It counts down from 3.
+                    </p>
+                    <button type="button" disabled={shot} onClick={shoot}
+                        className="mt-4 h-14 w-full rounded-full bg-cream font-display text-base font-semibold text-obsidian transition active:scale-[0.98] disabled:opacity-70">
+                        {shot ? 'Look at the mirror…' : 'Take my photo'}
+                    </button>
+                </section>
+            )}
 
             {active && (
                 <section className="mt-6 flex flex-col gap-3">
