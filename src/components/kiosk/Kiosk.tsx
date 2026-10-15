@@ -162,22 +162,27 @@ export function Kiosk() {
         }
     };
 
+    // The rack is read fresh for each visit, so pieces the store adds or sells
+    // out of show up without restarting the screen.
+    const hasRack = !!hello?.store?.hasRack;
     useEffect(() => {
-        if (!session || !hello?.store?.hasRack) return;
+        if (!session || !hasRack) return;
         call<{ items: RackItem[] }>({ action: 'catalog.list' })
             .then((r) => setRack(r.items))
             .catch(() => setRack([]));
-    }, [session, hello, call]);
+    }, [session, hasRack, call]);
 
     // Checks in every few minutes while it is on, so a store's dashboard can
-    // tell a mirror that is quiet from one that is switched off.
+    // tell a mirror that is quiet from one that is switched off -- and so the
+    // screen notices when its store's rack fills or changes.
+    const online = !!hello;
     useEffect(() => {
-        if (!hello || !launch?.deviceKey) return;
+        if (!online || !launch?.deviceKey) return;
         const id = setInterval(() => {
-            mirrorCall({ action: 'device.hello' }, launch.deviceKey).catch(() => {});
+            mirrorCall<DeviceHello>({ action: 'device.hello' }, launch.deviceKey).then(setHello).catch(() => {});
         }, 5 * 60_000);
         return () => clearInterval(id);
-    }, [hello, launch]);
+    }, [online, launch]);
 
     const openWardrobe = (tab: 'rack' | 'all' = 'all') => {
         // First time in from the phone: everything they sent is probably what

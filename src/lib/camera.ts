@@ -1,11 +1,12 @@
-// Camera access on a Proto Luma.
+// Camera access on a Proto Luma, or any screen with a webcam.
 //
 // Proto grants camera access to apps without a permission prompt, but a Luma
 // reports more than one video input: the real camera, plus a capture device on
 // its second HDMI port (and an Epic adds a RealSense depth camera). Proto's
 // own guidance is to filter those out by label, which is what usableCameras
-// does. If that still picks the wrong one, /calibrate stores an explicit
-// choice that wins.
+// does -- "RealSense" in full, since plenty of ordinary webcams on other
+// screens are made by Realtek. If that still picks the wrong one, /calibrate
+// stores an explicit choice that wins.
 
 import type { Rotation } from './settings';
 
@@ -15,7 +16,7 @@ export interface CameraInfo {
     excluded: boolean;
 }
 
-const NOT_A_CAMERA = /hdmi|real/i;
+const NOT_A_CAMERA = /hdmi|realsense/i;
 
 export async function listCameras(): Promise<CameraInfo[]> {
     // Labels are empty until the page has been granted a stream once.

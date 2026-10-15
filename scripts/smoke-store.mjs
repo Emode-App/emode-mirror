@@ -1,11 +1,14 @@
-// End-to-end check of the store side: branding, the rack, and the dashboard.
+// End-to-end check of the store side: a retailer's catalog becoming the rack,
+// branding, trying a rack piece on, and the dashboard.
 //
-//   node scripts/smoke-store.mjs              # API checks, no AI call
-//   node scripts/smoke-store.mjs --generate   # + one real look from a rack piece
+//   node scripts/smoke-store.mjs                     # API checks, no AI call
+//   node scripts/smoke-store.mjs --generate          # + one real look from a rack piece
+//   node scripts/smoke-store.mjs --feed <url>        # use another catalog
 //
-// Uses DEV_DEVICE_KEY and TEST_STORE_DASHBOARD_URL from .devices.local. The Dev
-// laptop mirror belongs to the test store, whose rack is a real Emode Business
-// account's listings.
+// Uses DEV_DEVICE_KEY and TEST_RETAILER_DASHBOARD_URL from .devices.local. The
+// Dev laptop mirror belongs to the test retailer, whose rack is set here, from
+// its dashboard, to a real fashion retailer's public Shopify catalog -- the
+// same thing a store's own team does.
 
 import { readFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
@@ -22,11 +25,13 @@ const local = (() => {
     }
 })();
 const key = process.env.DEV_DEVICE_KEY || local.DEV_DEVICE_KEY;
-const dashUrl = process.env.TEST_STORE_DASHBOARD_URL || local.TEST_STORE_DASHBOARD_URL;
+const dashUrl = process.env.TEST_RETAILER_DASHBOARD_URL || local.TEST_RETAILER_DASHBOARD_URL;
 if (!key || !dashUrl) {
-    console.error('Needs DEV_DEVICE_KEY and TEST_STORE_DASHBOARD_URL in .devices.local');
+    console.error('Needs DEV_DEVICE_KEY and TEST_RETAILER_DASHBOARD_URL in .devices.local');
     process.exit(1);
 }
+const feedAt = process.argv.indexOf('--feed');
+const FEED = feedAt > -1 ? process.argv[feedAt + 1] : 'https://representclo.com';
 const storeId = dashUrl.match(/\/store\/([0-9a-f-]{36})/)[1];
 const dashToken = dashUrl.split('#')[1];
 
@@ -78,14 +83,30 @@ function mannequinPng(w = 540, h = 960) {
     ]).toString('base64');
 }
 
+// ── The store points its rack at its own catalog, from its dashboard ────────
+const notFeed = await call({ action: 'store.catalog.set', storeId, token: dashToken, feedUrl: 'https://example.com/' });
+check('a link that isn’t a catalog is refused on the spot', notFeed.status === 422, notFeed.body?.error);
+const wrongLink = await call({ action: 'store.catalog.set', storeId, token: 'x'.repeat(32), feedUrl: FEED });
+check('only the store’s own link can change its rack', wrongLink.status === 404);
+
+const t0 = Date.now();
+const set = await call({ action: 'store.catalog.set', storeId, token: dashToken, feedUrl: FEED });
+const status = set.body?.rack;
+check(`the catalog is read into the rack (${Math.round((Date.now() - t0) / 1000)}s)`, set.status === 200 && status?.count > 0,
+    set.body?.error || `${status?.count} pieces from ${status?.feedUrl}`);
+check('it is sorted into categories', Object.keys(status?.byCategory || {}).length > 1, JSON.stringify(status?.byCategory));
+check('prices carry the store’s currency', status?.preview?.some((p) => p.price != null && /^[A-Z]{3}$/.test(p.currency || '')),
+    status?.preview?.[0] && `${status.preview[0].name}: ${status.preview[0].price} ${status.preview[0].currency}`);
+check('nothing to warn about', !status?.message, status?.message);
+
 const hello = await call({ action: 'device.hello' }, key);
-check('the mirror knows its store', hello.body?.store?.name === 'Emode Test Store', hello.body?.store?.name);
+check('the mirror knows its store', hello.body?.store?.name === 'Test Retailer', hello.body?.store?.name);
 check('the store has a rack', hello.body?.store?.hasRack === true);
 
 const rack = await call({ action: 'catalog.list' }, key);
 const items = rack.body?.items || [];
-check('the rack lists the store’s live listings', rack.status === 200 && items.length > 0, `${items.length} piece(s)`);
-check('rack pieces carry a photo', items.every((i) => i.imageUrl));
+check('the mirror lists the whole rack', rack.status === 200 && items.length === status?.count, `${items.length} piece(s)`);
+check('rack pieces carry a photo and a category', items.every((i) => i.imageUrl && i.category));
 
 const start = await call({ action: 'session.start', consent: true, adult: true }, key);
 const sessionId = start.body?.sessionId;
@@ -99,7 +120,9 @@ check('a product that isn’t this store’s is refused', stranger.status === 40
 
 const state = await call({ action: 'session.state', sessionId }, key);
 const g = state.body?.garments?.find((x) => x.id === add.body?.garmentId);
-check('the piece is recorded against its listing', g?.source === 'catalog' && g?.productId === items[0]?.id, g?.title);
+check('the piece is recorded against its rack item', g?.source === 'catalog' && g?.productId === items[0]?.id, g?.title);
+check('it links to the retailer’s own product page', !!g?.productUrl && new URL(g.productUrl).hostname === new URL(FEED).hostname, g?.productUrl);
+check('it keeps the catalog’s category', items[0]?.category === 'other' || g?.category === items[0]?.category, `${g?.category}`);
 
 if (process.argv.includes('--generate')) {
     await call({ action: 'session.capture', sessionId, image: mannequinPng() }, key);

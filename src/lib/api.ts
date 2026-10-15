@@ -11,12 +11,12 @@ const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 export type Theme = 'dark' | 'light';
 
-export type Category = 'tops' | 'outerwear' | 'bottoms' | 'shoes' | 'accessories' | 'other';
+export type Category = 'tops' | 'outerwear' | 'bottoms' | 'dresses' | 'shoes' | 'accessories' | 'other';
 
 export interface Garment {
     id: string;
     source: 'upload' | 'link' | 'wardrobe' | 'catalog';
-    /** For pieces from a store's rack: the listing they came from. */
+    /** For pieces from a store's rack: the rack item they came from. */
     productId: string | null;
     /** Filled in a few seconds after an upload or link, by a classifier; immediate for wardrobe pieces. */
     category: Category | null;
@@ -68,12 +68,30 @@ export interface DeviceHello {
 export interface RackItem {
     id: string;
     name: string;
+    brand: string | null;
     price: number | null;
+    currency: string | null;
     imageUrl: string;
+    category: Category;
+}
+
+export interface RackStatus {
+    /** The retailer's catalog the rack is copied from: a Google Shopping feed or a Shopify link. */
+    feedUrl: string | null;
+    /** An Emode Business account's listings are part of the rack too. */
+    emodeShop: boolean;
+    count: number;
+    byCategory: Partial<Record<Category, number>>;
+    syncedAt: string | null;
+    syncing: boolean;
+    /** An error from the last refresh, or a note about it. */
+    message: string | null;
+    preview: { id: string; name: string; price: number | null; currency: string | null; imageUrl: string }[];
 }
 
 export interface StoreDashboard {
     store: { name: string; logoUrl: string | null; hasRack: boolean };
+    rack: RackStatus;
     days: number;
     totals: {
         visits: number;
@@ -87,8 +105,22 @@ export interface StoreDashboard {
     };
     mirrors: { name: string; location: string | null; active: boolean; online: boolean; lastSeenAt: string | null; visits: number; looks: number }[];
     daily: { date: string; visits: number; looks: number }[];
-    topRack: { id: string; name: string; price: number | null; imageUrl: string | null; tries: number }[];
+    topRack: { id: string; name: string; price: number | null; currency: string | null; imageUrl: string | null; tries: number }[];
     topLinks: { host: string; title: string; count: number }[];
+}
+
+/** A price as a shopper reads it: "$120", "£89.50". */
+export function formatPrice(price: number, currency: string | null): string {
+    try {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency',
+            currency: currency || 'USD',
+            minimumFractionDigits: price % 1 ? 2 : 0,
+            maximumFractionDigits: 2,
+        }).format(price);
+    } catch {
+        return `$${price.toFixed(2)}`;
+    }
 }
 
 export class MirrorError extends Error {

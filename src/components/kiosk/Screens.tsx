@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { Category, Garment, Look, RackItem, StoreInfo } from '@/lib/api';
+import { formatPrice, type Category, type Garment, type Look, type RackItem, type StoreInfo } from '@/lib/api';
 import { Qr } from '@/components/Qr';
 import { Wordmark } from '@/components/Wordmark';
 import { Bloom, Eyebrow, KioskButton, Title } from './ui';
@@ -249,11 +249,14 @@ const CATEGORY_LABELS: Record<Category, string> = {
     tops: 'Tops',
     outerwear: 'Outerwear',
     bottoms: 'Bottoms',
+    dresses: 'Dresses',
     shoes: 'Shoes',
     accessories: 'Accessories',
     other: 'Other',
 };
-const CATEGORY_ORDER: Category[] = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'];
+const CATEGORY_ORDER: Category[] = ['tops', 'outerwear', 'bottoms', 'dresses', 'shoes', 'accessories', 'other'];
+// A retailer's rack can run to hundreds of pieces; render it a screenful at a time.
+const RACK_PAGE = 48;
 
 function RackTile({ item, selectedIndex, pending, onToggle }: { item: RackItem; selectedIndex: number; pending: boolean; onToggle: () => void }) {
     const selected = selectedIndex >= 0;
@@ -263,7 +266,7 @@ function RackTile({ item, selectedIndex, pending, onToggle }: { item: RackItem; 
                 ${selected ? 'ring-[0.14rem] ring-gold' : 'ring-[0.06rem] ring-line'}`}>
             <div className="relative aspect-[3/4] w-full bg-white">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={item.imageUrl} alt={item.name} className="absolute inset-0 h-full w-full object-contain p-[0.4rem]" />
+                <img src={item.imageUrl} alt={item.name} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-contain p-[0.4rem]" />
                 {selected && (
                     <span className="absolute right-[0.4rem] top-[0.4rem] grid h-[1.5rem] w-[1.5rem] place-items-center rounded-full bg-gold font-display text-[0.75rem] font-bold text-obsidian">
                         {selectedIndex + 1}
@@ -272,7 +275,7 @@ function RackTile({ item, selectedIndex, pending, onToggle }: { item: RackItem; 
                 {pending && <span className="absolute inset-0 grid place-items-center bg-white/60 text-[0.6rem] text-obsidian animate-soft-pulse">Adding…</span>}
             </div>
             <span className="truncate px-[0.6rem] pt-[0.45rem] text-[0.62rem]">{item.name}</span>
-            {item.price != null && <span className="px-[0.6rem] pb-[0.45rem] text-[0.6rem] text-muted">${Number(item.price).toFixed(2)}</span>}
+            {item.price != null && <span className="px-[0.6rem] pb-[0.45rem] text-[0.6rem] text-muted">{formatPrice(item.price, item.currency)}</span>}
         </button>
     );
 }
@@ -340,6 +343,21 @@ export function Wardrobe({
         if (tab !== 'all' && tab !== 'rack' && !counts.get(tab)) setTab('all');
     }, [tab, counts]);
 
+    // Within the rack, the store's own categories.
+    const [rackCategory, setRackCategory] = useState<Category | 'all'>('all');
+    const [rackLimit, setRackLimit] = useState(RACK_PAGE);
+    const rackCounts = useMemo(() => {
+        const c = new Map<Category, number>();
+        for (const item of rack) c.set(item.category, (c.get(item.category) ?? 0) + 1);
+        return c;
+    }, [rack]);
+    const rackTabs = CATEGORY_ORDER.filter((c) => rackCounts.get(c));
+    const rackShown = rackCategory === 'all' ? rack : rack.filter((item) => item.category === rackCategory);
+    const pickRackCategory = (c: Category | 'all') => {
+        setRackCategory(c);
+        setRackLimit(RACK_PAGE);
+    };
+
     return (
         <div className="flex h-full flex-col px-[2.6rem] pt-[5rem]">
             <div className="flex items-end justify-between gap-[1rem]">
@@ -374,12 +392,23 @@ export function Wardrobe({
                             ))}
                         </div>
                     )}
+                    {tab === 'rack' && rackTabs.length > 1 && (
+                        <div className="flex gap-[0.4rem] overflow-x-auto pb-[0.2rem]">
+                            {(['all', ...rackTabs] as (Category | 'all')[]).map((c) => (
+                                <button key={c} type="button" onClick={() => pickRackCategory(c)}
+                                    className={`shrink-0 rounded-full px-[0.85rem] py-[0.4rem] text-[0.68rem] font-semibold transition
+                                        ${rackCategory === c ? 'bg-gold text-obsidian' : 'text-muted'}`}>
+                                    {c === 'all' ? `All ${rack.length}` : `${CATEGORY_LABELS[c]} ${rackCounts.get(c)}`}
+                                </button>
+                            ))}
+                        </div>
+                    )}
                 </div>
             )}
 
             <div className="mt-[1.4rem] grid min-h-0 flex-1 auto-rows-min grid-cols-3 gap-[0.9rem] overflow-y-auto pb-[1rem]">
                 {tab === 'rack'
-                    ? rack.map((item) => {
+                    ? rackShown.slice(0, rackLimit).map((item) => {
                         const gid = garmentForProduct.get(item.id);
                         return (
                             <RackTile key={item.id} item={item} pending={rackPending === item.id}
@@ -390,6 +419,12 @@ export function Wardrobe({
                     : shown.map((g) => (
                         <GarmentTile key={g.id} garment={g} selectedIndex={selected.indexOf(g.id)} onToggle={() => onToggle(g.id)} />
                     ))}
+                {tab === 'rack' && rackShown.length > rackLimit && (
+                    <button type="button" onClick={() => setRackLimit((n) => n + RACK_PAGE)}
+                        className="col-span-3 rounded-[0.8rem] border-[0.06rem] border-line py-[1rem] font-display text-[0.8rem] font-semibold text-muted">
+                        Show more · {rackShown.length - rackLimit} left
+                    </button>
+                )}
                 {tab !== 'rack' && own.length === 0 && (
                     <p className="col-span-3 mt-[2rem] text-center text-[0.85rem] text-faint">
                         Scan the code to send your own pieces from your phone.

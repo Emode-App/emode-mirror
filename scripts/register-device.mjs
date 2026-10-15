@@ -1,12 +1,16 @@
 // Register a new mirror screen.
 //
-//   node scripts/register-device.mjs "Store name — Luma 1" "Atlanta, GA" [--store <store id>]
+//   node scripts/register-device.mjs "Store name — Front window" "Atlanta, GA" [--store <store id>]
 //
 // Prints the device key ONCE, plus the SQL that registers its hash. Run the SQL
-// in the Supabase SQL editor (project scvvbjheyfnxlsiiozta), then set the
-// screen's launch URL to:
+// in the Supabase SQL editor (project scvvbjheyfnxlsiiozta), then open the
+// screen's launch URL on it:
 //
 //   https://mirror.emode.style/?device=<KEY>
+//
+// On a Proto Luma that is the app's launch URL in the Proto App Launcher. On
+// any other screen it is the page a kiosk browser opens at start-up (see
+// "Other screens" in the README).
 //
 // --store attaches the screen to a store (scripts/create-store.mjs): it then
 // shows that store's name and rack, and counts on that store's dashboard.

@@ -3,8 +3,9 @@
 //
 // Two kinds of caller, neither of them an Emode account:
 //
-//   the kiosk -- a web app on a Proto Luma, identified by a per-device key
-//                that lives in the launch URL configured on the device;
+//   the kiosk -- a web app on an in-store screen (a Proto Luma, or any
+//                portrait touchscreen with a camera), identified by a
+//                per-device key in the launch URL configured on the screen;
 //   the phone -- whoever scanned the QR code on that kiosk, identified by an
 //                upload token that only ever travels in the QR code's URL
 //                fragment.
@@ -20,6 +21,10 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.86.2';
 import { encodeBase64, decodeBase64 } from 'https://deno.land/std@0.224.0/encoding/base64.ts';
+import {
+    CATEGORIES, type Category, type FeedItem, categoryFromText, parseShopifyProducts, parseTableFeed,
+    parseXmlFeed, shopifyProductsBase, sniffFeed,
+} from './catalog.ts';
 
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY') || '';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -195,12 +200,10 @@ async function clientHash(req: Request): Promise<string | null> {
 
 // ────────────────────────────────────────────────────────── categories ────
 
-const CATEGORIES = ['tops', 'outerwear', 'bottoms', 'shoes', 'accessories', 'other'] as const;
-type Category = typeof CATEGORIES[number];
-
 /** The app's wardrobe folders, in the mirror's vocabulary. */
 function categoryFromFolder(slug: string | null | undefined, name: string | null | undefined): Category | null {
     const s = `${slug || ''} ${name || ''}`.toLowerCase();
+    if (/dress|jumpsuit|romper/.test(s)) return 'dresses';
     if (/shirt|top|tee|blouse|sweater|knit|hood/.test(s)) return 'tops';
     if (/jacket|coat|outer|blazer/.test(s)) return 'outerwear';
     if (/pant|jean|trouser|short|skirt|bottom/.test(s)) return 'bottoms';
@@ -249,7 +252,8 @@ async function addGarment(session: any, image: { bytes: Uint8Array; mime: string
     title?: string | null;
     productUrl?: string | null;
     category?: Category | null;
-    productId?: string | null;
+    /** For a piece from a store's rack: its row in mirror_store_products. */
+    storeProductId?: string | null;
 }) {
     const id = crypto.randomUUID();
     const path = `sessions/${session.id}/garments/${id}.${image.ext}`;
@@ -264,7 +268,7 @@ async function addGarment(session: any, image: { bytes: Uint8Array; mime: string
         title: fields.title ? String(fields.title).slice(0, 300) : null,
         product_url: fields.productUrl || null,
         category: fields.category || null,
-        product_id: fields.productId || null,
+        store_product_id: fields.storeProductId || null,
     });
     if (error) throw new Error(error.message);
     if (!fields.category) background(classifyGarment(id, image.bytes, image.mime));
@@ -284,23 +288,260 @@ async function garmentCount(sessionId: string) {
 
 // ───────────────────────────────────────────────────────────────── stores ────
 
+const STORE_FIELDS = 'id, name, logo_url, owner_id, catalog_feed_url, catalog_synced_at, catalog_sync_started_at, catalog_sync_message';
+const MAX_RACK_ITEMS = 1500;
+const MAX_FEED_BYTES = 25 * 1024 * 1024;
+const CATALOG_REFRESH_HOURS = 2;
+// A refresh that started this recently is still running (or died); either way
+// nobody starts another until it has had time to finish.
+const CATALOG_SYNC_LOCK_MS = 2 * 60_000;
+
 async function storeOf(device: any) {
     if (!device?.store_id) return null;
     const { data } = await admin.from('mirror_stores')
-        .select('id, name, logo_url, owner_id').eq('id', device.store_id).maybeSingle();
+        .select(STORE_FIELDS).eq('id', device.store_id).maybeSingle();
     return data;
 }
 
-/** A store's rack: the active listings of the Emode Business account behind it. */
-async function rackFor(store: any, limit = 60) {
-    if (!store?.owner_id) return [];
+async function rackCount(storeId: string) {
+    const { count } = await admin.from('mirror_store_products')
+        .select('id', { count: 'exact', head: true })
+        .eq('store_id', storeId).eq('is_active', true);
+    return count || 0;
+}
+
+/** Products from a Shopify store or collection, a page of 250 at a time. */
+async function readShopify(productsJson: string): Promise<FeedItem[]> {
+    const base = new URL(productsJson);
+    const items: FeedItem[] = [];
+    const seen = new Set<string>();
+    for (let page = 1; page <= Math.ceil(MAX_RACK_ITEMS / 250); page++) {
+        const pageUrl = new URL(base);
+        pageUrl.searchParams.set('limit', '250');
+        pageUrl.searchParams.set('page', String(page));
+        const res = await fetchCapped(await assertPublicUrl(pageUrl.toString()), 15 * 1024 * 1024, 'application/json', 30_000);
+        let json: any;
+        try {
+            json = JSON.parse(new TextDecoder().decode(res.bytes));
+        } catch {
+            if (page === 1) throw new HttpError(422, 'That Shopify store didn’t return its products.', 'not_a_feed');
+            break;
+        }
+        for (const item of parseShopifyProducts(json, base.origin)) {
+            if (seen.has(item.externalId)) continue;
+            seen.add(item.externalId);
+            items.push(item);
+        }
+        if ((json?.products?.length || 0) < 250 || items.length >= MAX_RACK_ITEMS) break;
+    }
+    // products.json has prices but not their currency; the shop's meta.json does.
+    let currency: string | null = null;
+    try {
+        const meta = await fetchCapped(await assertPublicUrl(`${base.origin}/meta.json`), 256 * 1024, 'application/json');
+        const c = JSON.parse(new TextDecoder().decode(meta.bytes))?.currency;
+        if (typeof c === 'string' && /^[A-Z]{3}$/.test(c)) currency = c;
+    } catch { /* prices show without a currency */ }
+    return items.slice(0, MAX_RACK_ITEMS).map((i) => ({ ...i, currency: i.currency ?? currency }));
+}
+
+/**
+ * Read whatever catalog a store pointed us at: a Google Shopping feed (XML,
+ * TSV or CSV), or a Shopify store or collection link. Failures come back as
+ * messages the store's own team can act on.
+ */
+async function readFeed(raw: string): Promise<{ items: FeedItem[]; note: string | null }> {
+    const url = await assertPublicUrl(raw);
+    if (/\/products\.json$/i.test(url.pathname)) return { items: await readShopify(shopifyProductsBase(url.toString())!), note: null };
+
+    const res = await fetchCapped(url, MAX_FEED_BYTES,
+        'application/xml,text/xml,application/rss+xml,application/atom+xml,text/tab-separated-values,text/csv,application/json;q=0.9,text/html;q=0.5,*/*;q=0.1',
+        45_000);
+    const text = new TextDecoder().decode(res.bytes);
+    const note = res.truncated
+        ? `Your feed is larger than ${MAX_FEED_BYTES / 1024 / 1024} MB, so the mirror read the first part of it. A smaller feed, or one collection, keeps it complete.`
+        : null;
+    const kind = sniffFeed(text);
+    if (kind === 'xml') return { items: parseXmlFeed(text, MAX_RACK_ITEMS), note };
+    if (kind === 'table') {
+        // A table cut short mid-row would end on half a product.
+        const whole = res.truncated ? text.slice(0, text.lastIndexOf('\n')) : text;
+        return { items: parseTableFeed(whole, MAX_RACK_ITEMS), note };
+    }
+    const shopify = shopifyProductsBase(res.finalUrl);
+    if (kind === 'json' && shopify) {
+        try {
+            if (Array.isArray(JSON.parse(text)?.products)) return { items: await readShopify(shopify), note: null };
+        } catch { /* not JSON after all */ }
+    }
+    // A Shopify storefront page: its catalog is one path away.
+    if (kind === 'html' && shopify && /cdn\.shopify\.com|\/cdn\/shop\/|Shopify\.theme|shopify-section/i.test(text)) {
+        return { items: await readShopify(shopify), note: null };
+    }
+    throw new HttpError(422, 'That link isn’t a product feed. Use your Google Shopping feed URL, or a link to your Shopify store or one of its collections.', 'not_a_feed');
+}
+
+function feedProblem(e: unknown): string {
+    if (e instanceof HttpError) {
+        if (e.code === 'link_blocked') return 'Your site refused our request for the feed. If it blocks automated requests, allow EmodeMirror or send us the feed another way.';
+        if (e.code === 'link_timeout') return 'Your feed took too long to load. Try again, or use a smaller feed or a single collection.';
+        return e.message;
+    }
+    console.error('feed read failed', e);
+    return 'We couldn’t read your feed just now. Try again in a few minutes.';
+}
+
+/** The live listings of the Emode Business account behind a store. */
+async function readEmodeShop(ownerId: string): Promise<FeedItem[]> {
     const { data } = await admin.from('products')
-        .select('id, name, price, image_urls, external_links, created_at')
-        .eq('seller_id', store.owner_id)
-        .eq('is_active', true)
+        .select('id, name, price, category, image_urls, external_links')
+        .eq('seller_id', ownerId).eq('is_active', true)
         .order('created_at', { ascending: false })
-        .limit(limit);
-    return (data || []).filter((p: any) => Array.isArray(p.image_urls) && typeof p.image_urls[0] === 'string');
+        .limit(MAX_RACK_ITEMS);
+    return (data || [])
+        .filter((p: any) => Array.isArray(p.image_urls) && typeof p.image_urls[0] === 'string')
+        .map((p: any) => ({
+            externalId: `emode:${p.id}`,
+            name: String(p.name || 'Piece').slice(0, 300),
+            brand: null,
+            price: p.price != null ? Number(p.price) : null,
+            currency: 'USD',
+            imageUrl: p.image_urls[0],
+            productUrl: typeof p.external_links?.website === 'string' ? p.external_links.website : null,
+            category: categoryFromText(p.category, p.name),
+        }));
+}
+
+/** Claim the right to refresh a store's catalog. False if a refresh is under way. */
+async function claimCatalogSync(storeId: string): Promise<boolean> {
+    const cutoff = new Date(Date.now() - CATALOG_SYNC_LOCK_MS).toISOString();
+    const { data } = await admin.from('mirror_stores')
+        .update({ catalog_sync_started_at: new Date().toISOString() })
+        .eq('id', storeId)
+        .or(`catalog_sync_started_at.is.null,catalog_sync_started_at.lt.${cutoff}`)
+        .select('id');
+    return !!data?.length;
+}
+
+/**
+ * Copy a store's catalog into its rack. Pieces that have left the catalog are
+ * switched off, not deleted. If the feed itself can't be read this time, its
+ * pieces stay as they were: a store's site being down for a minute should not
+ * empty the mirror.
+ */
+async function syncCatalog(store: any, preread?: { items: FeedItem[]; note: string | null }) {
+    const started = new Date().toISOString();
+    let message: string | null = null;
+    let feedFailed = false;
+    const rows: (FeedItem & { source: 'feed' | 'emode' })[] = [];
+
+    if (store.catalog_feed_url) {
+        try {
+            const { items, note } = preread ?? await readFeed(store.catalog_feed_url);
+            message = items.length ? note : 'We read your feed, but found no in-stock clothing with photos in it.';
+            for (const i of items) rows.push({ ...i, source: 'feed' });
+        } catch (e) {
+            feedFailed = true;
+            message = feedProblem(e);
+        }
+    }
+    if (store.owner_id) {
+        for (const i of await readEmodeShop(store.owner_id)) rows.push({ ...i, source: 'emode' });
+    }
+
+    const seen = new Set<string>();
+    const records = rows
+        .filter((r) => !seen.has(r.externalId) && seen.add(r.externalId))
+        .slice(0, MAX_RACK_ITEMS)
+        .map((r, position) => ({
+            store_id: store.id,
+            source: r.source,
+            external_id: r.externalId,
+            name: r.name.slice(0, 300),
+            brand: r.brand,
+            price: r.price,
+            currency: r.currency && /^[A-Z]{3}$/.test(r.currency) ? r.currency : null,
+            image_url: r.imageUrl,
+            product_url: r.productUrl,
+            category: r.category,
+            is_active: true,
+            position,
+            synced_at: started,
+        }));
+    for (let i = 0; i < records.length; i += 500) {
+        const { error } = await admin.from('mirror_store_products')
+            .upsert(records.slice(i, i + 500), { onConflict: 'store_id,external_id' });
+        if (error) throw new Error(`catalog upsert failed: ${error.message}`);
+    }
+
+    let gone = admin.from('mirror_store_products')
+        .update({ is_active: false })
+        .eq('store_id', store.id).eq('is_active', true).lt('synced_at', started);
+    if (feedFailed) gone = gone.neq('source', 'feed');
+    await gone;
+
+    await admin.from('mirror_stores')
+        .update({ catalog_synced_at: new Date().toISOString(), catalog_sync_message: message })
+        .eq('id', store.id);
+    return { count: await rackCount(store.id), message };
+}
+
+/** Keep a store's rack fresh while its mirrors are on: at most every couple of hours. */
+function maybeRefreshCatalog(store: any) {
+    if (!store || (!store.catalog_feed_url && !store.owner_id)) return;
+    const last = store.catalog_synced_at ? Date.parse(store.catalog_synced_at) : 0;
+    if (Date.now() - last < CATALOG_REFRESH_HOURS * 3_600_000) return;
+    background((async () => {
+        if (await claimCatalogSync(store.id)) await syncCatalog(store);
+    })());
+}
+
+/** The store behind a dashboard link, or a refusal. */
+async function requireStoreLink(body: any) {
+    const storeId = requireUuid(body?.storeId, 'store');
+    const token = typeof body?.token === 'string' ? body.token : '';
+    const { data: store } = await admin.from('mirror_stores')
+        .select(STORE_FIELDS)
+        .eq('id', storeId)
+        .eq('dashboard_token_hash', await sha256Hex(token))
+        .maybeSingle();
+    if (!store || token.length < 20) {
+        throw new HttpError(404, 'That dashboard link isn’t valid. Ask Emode for a new one.', 'bad_link');
+    }
+    return store;
+}
+
+/** What the dashboard says about a store's rack. */
+async function rackStatus(store: any) {
+    const [{ data: preview }, { data: cats }] = await Promise.all([
+        admin.from('mirror_store_products')
+            .select('id, name, price, currency, image_url')
+            .eq('store_id', store.id).eq('is_active', true)
+            .order('position').limit(12),
+        admin.from('mirror_store_products')
+            .select('category')
+            .eq('store_id', store.id).eq('is_active', true)
+            .limit(MAX_RACK_ITEMS),
+    ]);
+    const byCategory: Record<string, number> = {};
+    for (const c of cats || []) byCategory[c.category] = (byCategory[c.category] || 0) + 1;
+    const started = store.catalog_sync_started_at ? Date.parse(store.catalog_sync_started_at) : 0;
+    const finished = store.catalog_synced_at ? Date.parse(store.catalog_synced_at) : 0;
+    return {
+        feedUrl: store.catalog_feed_url,
+        emodeShop: !!store.owner_id,
+        count: (cats || []).length,
+        byCategory,
+        syncedAt: store.catalog_synced_at,
+        syncing: started > finished && Date.now() - started < CATALOG_SYNC_LOCK_MS,
+        message: store.catalog_sync_message,
+        preview: (preview || []).map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            price: p.price != null ? Number(p.price) : null,
+            currency: p.currency,
+            imageUrl: p.image_url,
+        })),
+    };
 }
 
 /**
@@ -446,7 +687,7 @@ async function describeSession(session: any) {
             id: g.id,
             source: g.source,
             category: g.category,
-            productId: g.product_id,
+            productId: g.store_product_id,
             title: g.title,
             productUrl: g.product_url,
             imageUrl: await signed(g.image_path),
@@ -621,7 +862,7 @@ async function runLook(look: any, session: any, device: any, garments: any[]) {
             // theirs, and are recorded as nothing but their kind.
             items: garments.map((g: any) => ({
                 source: g.source,
-                productId: g.source === 'catalog' ? g.product_id : null,
+                productId: g.source === 'catalog' ? g.store_product_id : null,
                 host: g.source === 'link' ? hostOf(g.product_url) : null,
                 title: g.source === 'link' || g.source === 'catalog' ? (g.title || '').slice(0, 80) : null,
             })),
@@ -684,9 +925,9 @@ async function assertPublicUrl(raw: string): Promise<URL> {
     return url;
 }
 
-async function fetchCapped(url: URL, maxBytes: number, accept: string): Promise<{ bytes: Uint8Array; type: string; finalUrl: string; truncated: boolean }> {
+async function fetchCapped(url: URL, maxBytes: number, accept: string, timeoutMs = 10_000): Promise<{ bytes: Uint8Array; type: string; finalUrl: string; truncated: boolean }> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
         // Redirects are followed by hand so each hop gets the same public-address check.
         let current = url;
@@ -803,10 +1044,11 @@ async function handle(req: Request, body: any): Promise<Response> {
         const device = await requireDevice(req, body);
         background(sweep());
         const store = await storeOf(device);
-        const rack = store ? await rackFor(store, 1) : [];
+        maybeRefreshCatalog(store);
+        const rackSize = store ? await rackCount(store.id) : 0;
         return json({
             device: { name: device.name, location: device.location, theme: device.theme, kind: device.kind },
-            store: store ? { name: store.name, logoUrl: store.logo_url, hasRack: rack.length > 0 } : null,
+            store: store ? { name: store.name, logoUrl: store.logo_url, hasRack: rackSize > 0 } : null,
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
     }
@@ -884,7 +1126,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         ids.forEach((id) => requireUuid(id, 'garment'));
 
         const { data: garments } = await admin.from('mirror_garments')
-            .select('id, image_path, title, source, product_url, product_id').eq('session_id', session.id).in('id', ids);
+            .select('id, image_path, title, source, product_url, store_product_id').eq('session_id', session.id).in('id', ids);
         if (!garments || garments.length !== ids.length) throw new HttpError(400, 'Some of those pieces are no longer here');
         // Keep the order the visitor picked them in.
         garments.sort((a: any, b: any) => ids.indexOf(a.id) - ids.indexOf(b.id));
@@ -956,13 +1198,22 @@ async function handle(req: Request, body: any): Promise<Response> {
     // ── A store's rack, tried on without a phone ──────────────────────────
     if (action === 'catalog.list') {
         const device = await requireDevice(req, body);
-        const rack = await rackFor(await storeOf(device));
+        const store = await storeOf(device);
+        if (!store) return json({ items: [] });
+        const { data } = await admin.from('mirror_store_products')
+            .select('id, name, brand, price, currency, image_url, category')
+            .eq('store_id', store.id).eq('is_active', true)
+            .order('position')
+            .limit(MAX_RACK_ITEMS);
         return json({
-            items: rack.map((p: any) => ({
+            items: (data || []).map((p: any) => ({
                 id: p.id,
                 name: p.name,
-                price: p.price,
-                imageUrl: p.image_urls[0],
+                brand: p.brand,
+                price: p.price != null ? Number(p.price) : null,
+                currency: p.currency,
+                imageUrl: p.image_url,
+                category: p.category,
             })),
         });
     }
@@ -972,33 +1223,40 @@ async function handle(req: Request, body: any): Promise<Response> {
         const session = await requireKioskSession(device, body?.sessionId);
         const productId = requireUuid(body?.productId, 'product');
         const store = await storeOf(device);
-        if (!store?.owner_id) throw new HttpError(404, 'This mirror has no rack');
+        if (!store) throw new HttpError(404, 'This mirror has no rack');
 
         // Picking the same piece twice should not fill the mirror with copies.
         const { data: existing } = await admin.from('mirror_garments')
-            .select('id').eq('session_id', session.id).eq('product_id', productId).maybeSingle();
+            .select('id').eq('session_id', session.id).eq('store_product_id', productId).maybeSingle();
         if (existing) return json({ ok: true, garmentId: existing.id });
 
         if (await garmentCount(session.id) >= MAX_GARMENTS_PER_SESSION) {
             throw new HttpError(429, `That's ${MAX_GARMENTS_PER_SESSION} pieces — take one off to add another`, 'garment_limit');
         }
-        const { data: product } = await admin.from('products')
-            .select('id, name, image_urls, external_links, seller_id, is_active')
-            .eq('id', productId).maybeSingle();
-        // Only this store's own live listings, whatever id the screen sends.
-        if (!product || product.seller_id !== store.owner_id || !product.is_active) {
-            throw new HttpError(404, 'That piece is no longer on the rack');
-        }
-        const bytes = await fetchImage(product.image_urls?.[0] || '');
-        const type = bytes ? sniffImage(bytes) : null;
-        if (!bytes || !type) throw new HttpError(422, 'That piece’s photo could not be loaded');
+        // Only this store's own rack, whatever id the screen sends.
+        const { data: product } = await admin.from('mirror_store_products')
+            .select('id, name, brand, image_url, product_url, category, is_active')
+            .eq('id', productId).eq('store_id', store.id).maybeSingle();
+        if (!product || !product.is_active) throw new HttpError(404, 'That piece is no longer on the rack');
 
-        const shopUrl = typeof product.external_links?.website === 'string' ? product.external_links.website : null;
+        let bytes: Uint8Array | null = null;
+        try {
+            bytes = await fetchImage(product.image_url);
+        } catch (e) {
+            console.warn('rack photo failed', product.id, e instanceof Error ? e.message : e);
+        }
+        const type = bytes ? sniffImage(bytes) : null;
+        if (!bytes || !type) throw new HttpError(422, 'That piece’s photo couldn’t be loaded — try another.', 'bad_image');
+
         const id = await addGarment(session, { bytes, ...type }, {
             source: 'catalog',
+            // The name alone: a catalog's "brand" is often an internal label
+            // (Shopify vendors like "SS25 Other"), not something to show.
             title: product.name,
-            productUrl: shopUrl,
-            productId: product.id,
+            productUrl: product.product_url,
+            // The catalog's own category, unless it had none to give.
+            category: product.category !== 'other' ? product.category : null,
+            storeProductId: product.id,
         });
         await touch(session.id);
         return json({ ok: true, garmentId: id });
@@ -1006,16 +1264,7 @@ async function handle(req: Request, body: any): Promise<Response> {
 
     // ── The store's dashboard, by private link ───────────────────────────
     if (action === 'store.dashboard') {
-        const storeId = requireUuid(body?.storeId, 'store');
-        const token = typeof body?.token === 'string' ? body.token : '';
-        const { data: store } = await admin.from('mirror_stores')
-            .select('id, name, logo_url, owner_id')
-            .eq('id', storeId)
-            .eq('dashboard_token_hash', await sha256Hex(token))
-            .maybeSingle();
-        if (!store || token.length < 20) {
-            throw new HttpError(404, 'That dashboard link isn’t valid. Ask Emode for a new one.', 'bad_link');
-        }
+        const store = await requireStoreLink(body);
 
         const days = Math.min(90, Math.max(1, Number(body?.days) || 30));
         const since = new Date(Date.now() - (days - 1) * 86_400_000);
@@ -1076,11 +1325,14 @@ async function handle(req: Request, body: any): Promise<Response> {
 
         const topIds = Object.entries(rackCounts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id]) => id);
         const { data: products } = topIds.length
-            ? await admin.from('products').select('id, name, price, image_urls').in('id', topIds)
+            ? await admin.from('mirror_store_products')
+                .select('id, name, price, currency, image_url').eq('store_id', store.id).in('id', topIds)
             : { data: [] as any[] };
+        const rack = await rackStatus(store);
 
         return json({
-            store: { name: store.name, logoUrl: store.logo_url, hasRack: !!store.owner_id },
+            store: { name: store.name, logoUrl: store.logo_url, hasRack: rack.count > 0 },
+            rack,
             days,
             totals: {
                 visits: totals.visits,
@@ -1109,13 +1361,54 @@ async function handle(req: Request, body: any): Promise<Response> {
                 return {
                     id,
                     name: p?.name || 'A piece no longer listed',
-                    price: p?.price ?? null,
-                    imageUrl: p?.image_urls?.[0] || null,
+                    price: p?.price != null ? Number(p.price) : null,
+                    currency: p?.currency ?? null,
+                    imageUrl: p?.image_url || null,
                     tries: rackCounts[id],
                 };
             }),
             topLinks: Object.values(linkCounts).sort((a, b) => b.count - a.count).slice(0, 10),
         });
+    }
+
+    // Point the rack at a feed (or stop using one). The feed is read before it
+    // is saved, so a wrong link is refused on the spot instead of quietly
+    // leaving the mirror empty.
+    if (action === 'store.catalog.set') {
+        const store = await requireStoreLink(body);
+        const raw = typeof body?.feedUrl === 'string' ? body.feedUrl.trim().slice(0, 2000) : '';
+        if (!raw) {
+            await admin.from('mirror_stores').update({ catalog_feed_url: null }).eq('id', store.id);
+            const fresh = { ...store, catalog_feed_url: null };
+            if (await claimCatalogSync(store.id)) await syncCatalog(fresh);
+            return json({ rack: await rackStatus(await requireStoreLink(body)) });
+        }
+        if (!(await claimCatalogSync(store.id))) {
+            throw new HttpError(409, 'Your rack is already updating. Give it a minute.', 'syncing');
+        }
+        let preread;
+        try {
+            preread = await readFeed(raw);
+        } catch (e) {
+            await admin.from('mirror_stores').update({ catalog_sync_started_at: null }).eq('id', store.id);
+            throw new HttpError(422, feedProblem(e), 'bad_feed');
+        }
+        if (!preread.items.length) {
+            await admin.from('mirror_stores').update({ catalog_sync_started_at: null }).eq('id', store.id);
+            throw new HttpError(422, 'We read that link, but found no in-stock clothing with photos in it.', 'empty_feed');
+        }
+        await admin.from('mirror_stores').update({ catalog_feed_url: raw }).eq('id', store.id);
+        await syncCatalog({ ...store, catalog_feed_url: raw }, preread);
+        return json({ rack: await rackStatus(await requireStoreLink(body)) });
+    }
+
+    if (action === 'store.catalog.sync') {
+        const store = await requireStoreLink(body);
+        if (!store.catalog_feed_url && !store.owner_id) {
+            throw new HttpError(400, 'Add your product feed first.', 'no_source');
+        }
+        if (await claimCatalogSync(store.id)) await syncCatalog(store);
+        return json({ rack: await rackStatus(await requireStoreLink(body)) });
     }
 
     // ── Phone ─────────────────────────────────────────────────────────────
