@@ -7,6 +7,33 @@ import { KioskButton } from './ui';
 
 type Phase = 'starting' | 'live' | 'countdown' | 'review' | 'error';
 
+// The shopper taps the button at arm's length, then has to walk back far
+// enough for the camera to see them head to toe. Three seconds was not
+// enough; ten is, with room to turn around and settle.
+const STEP_BACK_SECONDS = 10;
+
+/**
+ * A short tone, so someone walking backwards hears the photo coming without
+ * watching the screen. The audio context is made on the tap that starts the
+ * countdown, which is what lets it play at all.
+ */
+function tone(ctx: AudioContext | null, freq: number, ms: number) {
+    if (!ctx) return;
+    try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + ms / 1000);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + ms / 1000 + 0.02);
+    } catch {
+        /* no sound is fine */
+    }
+}
+
 /**
  * Full-body photo, taken like a mirror.
  *
@@ -29,7 +56,8 @@ export function Capture({
     const videoRef = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const [phase, setPhase] = useState<Phase>('starting');
-    const [count, setCount] = useState(3);
+    const [count, setCount] = useState(STEP_BACK_SECONDS);
+    const audioRef = useRef<AudioContext | null>(null);
     const [still, setStill] = useState<string | null>(null);
     const [flash, setFlash] = useState(0);
     const [error, setError] = useState<string | null>(null);
@@ -66,6 +94,7 @@ export function Capture({
         if (!video || !video.videoWidth) return;
         setStill(captureFrame(video, rotation));
         setFlash((n) => n + 1);
+        tone(audioRef.current, 1320, 180);
         setPhase('review');
     }, [rotation]);
 
@@ -75,9 +104,28 @@ export function Capture({
             snap();
             return;
         }
+        if (count <= 3) tone(audioRef.current, 880, 120);
         const t = setTimeout(() => setCount((c) => c - 1), 1000);
         return () => clearTimeout(t);
     }, [phase, count, snap]);
+
+    useEffect(() => () => {
+        audioRef.current?.close().catch(() => {});
+    }, []);
+
+    const startCountdown = () => {
+        if (!audioRef.current) {
+            try {
+                const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+                audioRef.current = Ctx ? new Ctx() : null;
+            } catch {
+                audioRef.current = null;
+            }
+        }
+        audioRef.current?.resume().catch(() => {});
+        setCount(STEP_BACK_SECONDS);
+        setPhase('countdown');
+    };
 
     const rotated = rotation === 90 || rotation === 270;
 
@@ -113,10 +161,18 @@ export function Capture({
 
             <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/70 to-transparent px-[2rem] pb-[6rem] pt-[2.6rem] text-center text-white">
                 {phase === 'starting' && <p className="text-[1.3rem] font-display animate-soft-pulse">Starting the camera…</p>}
-                {(phase === 'live' || phase === 'countdown') && (
+                {phase === 'live' && (
                     <>
-                        <p className="font-display text-[1.9rem] font-semibold tracking-[-0.02em]">Step back</p>
-                        <p className="mt-[0.4rem] text-[0.95rem] text-white/80">Until you can see yourself head to toe.</p>
+                        <p className="font-display text-[1.9rem] font-semibold tracking-[-0.02em]">Tap, then step back</p>
+                        <p className="mt-[0.4rem] text-[0.95rem] text-white/80">
+                            You&apos;ll have {STEP_BACK_SECONDS} seconds to get your whole body in the frame, head to toe.
+                        </p>
+                    </>
+                )}
+                {phase === 'countdown' && (
+                    <>
+                        <p className="font-display text-[2.6rem] font-semibold tracking-[-0.02em]">Step back</p>
+                        <p className="mt-[0.4rem] text-[1.1rem] text-white/85">Head to toe in the frame. Stand still.</p>
                     </>
                 )}
                 {phase === 'review' && (
@@ -139,11 +195,14 @@ export function Capture({
             <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-[1rem] bg-gradient-to-t from-black/75 to-transparent px-[3rem] pb-[5rem] pt-[8rem]">
                 {phase === 'live' && (
                     <>
-                        <KioskButton tone="light" onClick={() => { setCount(3); setPhase('countdown'); }}>
+                        <KioskButton tone="light" onClick={startCountdown}>
                             Take my photo
                         </KioskButton>
                         <KioskButton tone="ghost-light" onClick={onCancel}>Back</KioskButton>
                     </>
+                )}
+                {phase === 'countdown' && (
+                    <KioskButton tone="ghost-light" onClick={() => setPhase('live')}>Stop</KioskButton>
                 )}
                 {phase === 'review' && still && (
                     <>
