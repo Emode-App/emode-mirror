@@ -93,17 +93,3 @@ export function captureFrame(video: HTMLVideoElement, rotation: Rotation, maxHei
 
     return canvas.toDataURL('image/jpeg', 0.9);
 }
-
-/**
- * The camera facing the person, on their own phone or laptop.
- *
- * The web mirror never knows which input is which and has no /calibrate, so it
- * asks for the front ("user") camera by role rather than by id. On a laptop
- * that is simply the webcam.
- */
-export function openFrontCamera(): Promise<MediaStream> {
-    return navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } },
-    });
-}
