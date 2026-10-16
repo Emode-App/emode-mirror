@@ -28,14 +28,20 @@ export function Visitor({ appUrl }: { appUrl: string }) {
                 </p>
             </div>
             <div className="relative mb-[7rem] mt-[3.4rem] flex flex-col items-center gap-[0.9rem]">
+                {/* On a big screen -- a Luma, a laptop -- the app belongs on the
+                    phone in your pocket, so it's a code to scan, not a button
+                    that would open the App Store on the screen itself. */}
+                <div className="hidden flex-col items-center gap-[0.9rem] md:flex">
+                    <Qr value={appUrl} className="w-[9rem] p-[0.5rem]" />
+                    <span className="text-[0.7rem] font-semibold uppercase tracking-[0.25em] text-faint">Scan to get the Emode app</span>
+                </div>
                 <a href={appUrl}
-                    className="inline-flex min-h-[2.7rem] min-w-[18rem] items-center justify-center rounded-full bg-fg px-[2.2rem] font-display text-[1.05rem] font-semibold text-bg">
+                    className="inline-flex min-h-[2.7rem] min-w-[18rem] items-center justify-center rounded-full bg-fg px-[2.2rem] font-display text-[1.05rem] font-semibold text-bg md:hidden">
                     Get the Emode app
                 </a>
-                <a href="https://www.emode.style/mirror" className="font-display text-[1rem] font-semibold text-muted underline underline-offset-[0.3rem]">
+                <a href="https://www.emode.style/mirror" className="font-display text-[1rem] font-semibold text-muted underline underline-offset-[0.3rem] md:hidden">
                     How Emode Mirror works
                 </a>
-
             </div>
             <p className="absolute bottom-[2.4rem] text-[0.55rem] text-faint">Setting up a mirror? Open /calibrate</p>
         </div>
