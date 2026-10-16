@@ -184,6 +184,25 @@ export function Kiosk() {
         return () => clearInterval(id);
     }, [online, launch]);
 
+    // A mirror stays open for days, so it would keep running whatever version
+    // it loaded. Every few minutes it asks which deploy is live; when that is
+    // newer, it reloads itself -- but only while idle on the start screen, never
+    // in the middle of someone's visit.
+    const [updateReady, setUpdateReady] = useState(false);
+    useEffect(() => {
+        const mine = process.env.NEXT_PUBLIC_BUILD_ID;
+        if (!online || !mine || mine === 'dev') return;
+        const check = () => fetch('/version', { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((v: { build?: string }) => { if (v.build && v.build !== 'dev' && v.build !== mine) setUpdateReady(true); })
+            .catch(() => {});
+        const id = setInterval(check, 3 * 60_000);
+        return () => clearInterval(id);
+    }, [online]);
+    useEffect(() => {
+        if (updateReady && stage.name === 'attract' && !session) window.location.reload();
+    }, [updateReady, stage.name, session]);
+
     const openWardrobe = (tab: 'rack' | 'all' = 'all') => {
         // First time in from the phone: everything they sent is probably what
         // they want on, so start with it all selected rather than make them
