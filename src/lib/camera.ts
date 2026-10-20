@@ -54,6 +54,21 @@ export async function openCamera(preferredId?: string | null): Promise<MediaStre
     });
 }
 
+/** How far the photo zooms in, and where: the centre of the view in the mirrored preview. */
+export interface Framing {
+    zoom: number;
+    cx: number;
+    cy: number;
+}
+
+/** A framing that stays inside the camera's picture (no zooming past its edges). */
+export function clampFraming(framing: Framing | null | undefined): Framing {
+    const zoom = Math.min(4, Math.max(1, framing?.zoom ?? 1));
+    const half = 0.5 / zoom;
+    const clamp = (v: number | undefined) => Math.min(1 - half, Math.max(half, v ?? 0.5));
+    return { zoom, cx: clamp(framing?.cx), cy: clamp(framing?.cy) };
+}
+
 /**
  * One frame as a portrait JPEG, flipped like a mirror.
  *
@@ -61,9 +76,10 @@ export async function openCamera(preferredId?: string | null): Promise<MediaStre
  * look should show them the way they just saw themselves. Garment references
  * are not flipped, so printed text on clothing still reads correctly in the
  * result. Cropped to 9:16 from the centre of the sensor, after any rotation
- * the camera is mounted with.
+ * the camera is mounted with, then to this mirror's framing -- the same part
+ * of the picture the preview showed.
  */
-export function captureFrame(video: HTMLVideoElement, rotation: Rotation, maxHeight = 1920): string {
+export function captureFrame(video: HTMLVideoElement, rotation: Rotation, framing?: Framing | null, maxHeight = 1920): string {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     const rotated = rotation === 90 || rotation === 270;
@@ -71,12 +87,20 @@ export function captureFrame(video: HTMLVideoElement, rotation: Rotation, maxHei
     const srcH = rotated ? vw : vh;
 
     // Largest 9:16 rectangle that fits the (rotated) frame.
-    let cropW = srcW;
-    let cropH = (srcW * 16) / 9;
-    if (cropH > srcH) {
-        cropH = srcH;
-        cropW = (srcH * 9) / 16;
+    let baseW = srcW;
+    let baseH = (srcW * 16) / 9;
+    if (baseH > srcH) {
+        baseH = srcH;
+        baseW = (srcH * 9) / 16;
     }
+
+    // Then the framing's window within it, in the preview's (mirrored) terms.
+    const { zoom, cx, cy } = clampFraming(framing);
+    const cropW = baseW / zoom;
+    const cropH = baseH / zoom;
+    const offX = (cx - 0.5) * baseW; // mirrored: right in the preview is left on the sensor
+    const offY = (cy - 0.5) * baseH;
+
     const scale = Math.min(1, maxHeight / cropH);
     const outW = Math.round(cropW * scale);
     const outH = Math.round(cropH * scale);
@@ -89,6 +113,7 @@ export function captureFrame(video: HTMLVideoElement, rotation: Rotation, maxHei
     ctx.translate(outW / 2, outH / 2);
     ctx.scale(-1, 1);
     ctx.scale(scale, scale);
+    ctx.translate(offX, -offY);
     ctx.rotate((rotation * Math.PI) / 180);
     ctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
 

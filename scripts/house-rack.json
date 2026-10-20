@@ -1,0 +1,173 @@
+{
+  "about": "Emode's own rack: the quick picks any mirror without a store rack offers under its QR code -- 4 rows (suits, tops, bottoms, shoes) of 3 men's and 3 women's pieces. Photos live in public/rack/<gender>/<key>.jpg; replace one by dropping a new file at the same path, or change the list and run scripts/seed-house-rack.mjs. 'describe' was only used to generate placeholder photos.",
+  "items": [
+    {
+      "key": "black-suit",
+      "gender": "men",
+      "category": "suits",
+      "name": "Black Suit",
+      "describe": "a men's black two-piece suit worn with a white open-collar shirt (photo supplied by Emode)"
+    },
+    {
+      "key": "sage-three-piece",
+      "gender": "men",
+      "category": "suits",
+      "name": "Sage Three-Piece Suit",
+      "describe": "a men's sage green three-piece suit with waistcoat, white shirt and patterned tie (photo supplied by Emode)"
+    },
+    {
+      "key": "navy-pinstripe",
+      "gender": "men",
+      "category": "suits",
+      "name": "Navy Pinstripe Suit",
+      "describe": "a men's navy pinstripe double-breasted suit with a light blue shirt (photo supplied by Emode)"
+    },
+    {
+      "key": "brown-check-suit",
+      "gender": "women",
+      "category": "suits",
+      "name": "Brown Check Suit",
+      "describe": "a women's oversized brown check blazer and matching wide trousers over a black turtleneck (photo supplied by Emode)"
+    },
+    {
+      "key": "plaid-skirt-set",
+      "gender": "women",
+      "category": "suits",
+      "name": "Grey Top & Plaid Skirt",
+      "describe": "a women's fitted grey long-sleeve top with a charcoal plaid pleated midi skirt (photo supplied by Emode)"
+    },
+    {
+      "key": "black-blazer-jeans",
+      "gender": "women",
+      "category": "suits",
+      "name": "Black Blazer & Wide Jeans",
+      "describe": "a women's black double-breasted oversized blazer with light-wash wide-leg jeans (photo supplied by Emode)"
+    },
+    {
+      "key": "white-oxford",
+      "gender": "men",
+      "category": "tops",
+      "name": "White Oxford Shirt",
+      "describe": "a men's white cotton oxford button-down shirt, long sleeves, buttoned"
+    },
+    {
+      "key": "navy-sweater",
+      "gender": "men",
+      "category": "tops",
+      "name": "Navy Merino Sweater",
+      "describe": "a men's navy merino wool crewneck sweater, fine knit"
+    },
+    {
+      "key": "black-tee",
+      "gender": "men",
+      "category": "tops",
+      "name": "Black Crewneck Tee",
+      "describe": "a men's plain black crewneck cotton t-shirt, regular fit"
+    },
+    {
+      "key": "silk-blouse",
+      "gender": "women",
+      "category": "tops",
+      "name": "White Silk Blouse",
+      "describe": "a women's white silk button-front blouse, long sleeves"
+    },
+    {
+      "key": "cream-knit",
+      "gender": "women",
+      "category": "tops",
+      "name": "Cream Cable-Knit Sweater",
+      "describe": "a women's cream cable-knit crewneck sweater"
+    },
+    {
+      "key": "black-fitted-tee",
+      "gender": "women",
+      "category": "tops",
+      "name": "Black Fitted Tee",
+      "describe": "a women's black fitted crewneck cotton t-shirt"
+    },
+    {
+      "key": "indigo-jeans",
+      "gender": "men",
+      "category": "bottoms",
+      "name": "Dark Indigo Jeans",
+      "describe": "men's dark indigo slim straight jeans, full length"
+    },
+    {
+      "key": "khaki-chinos",
+      "gender": "men",
+      "category": "bottoms",
+      "name": "Khaki Chinos",
+      "describe": "men's khaki cotton chino trousers, slim fit, full length"
+    },
+    {
+      "key": "black-trousers",
+      "gender": "men",
+      "category": "bottoms",
+      "name": "Black Tailored Trousers",
+      "describe": "men's black tailored wool trousers with a pressed crease, full length"
+    },
+    {
+      "key": "wide-leg-jeans",
+      "gender": "women",
+      "category": "bottoms",
+      "name": "Wide-Leg Jeans",
+      "describe": "women's high-waisted medium-wash wide-leg jeans, full length"
+    },
+    {
+      "key": "black-tailored-trousers",
+      "gender": "women",
+      "category": "bottoms",
+      "name": "Black Tailored Trousers",
+      "describe": "women's black high-waisted tailored straight trousers, full length"
+    },
+    {
+      "key": "pleated-midi-skirt",
+      "gender": "women",
+      "category": "bottoms",
+      "name": "Pleated Midi Skirt",
+      "describe": "a women's beige pleated satin midi skirt"
+    },
+    {
+      "key": "white-sneakers",
+      "gender": "men",
+      "category": "shoes",
+      "name": "White Leather Sneakers",
+      "describe": "men's minimalist white leather low-top sneakers"
+    },
+    {
+      "key": "brown-oxfords",
+      "gender": "men",
+      "category": "shoes",
+      "name": "Brown Oxfords",
+      "describe": "men's polished brown leather oxford dress shoes"
+    },
+    {
+      "key": "chelsea-boots",
+      "gender": "men",
+      "category": "shoes",
+      "name": "Black Chelsea Boots",
+      "describe": "men's black leather chelsea boots"
+    },
+    {
+      "key": "black-pumps",
+      "gender": "women",
+      "category": "shoes",
+      "name": "Black Pointed Pumps",
+      "describe": "women's black leather pointed-toe high-heel pumps"
+    },
+    {
+      "key": "white-sneakers",
+      "gender": "women",
+      "category": "shoes",
+      "name": "White Leather Sneakers",
+      "describe": "women's minimalist white leather low-top sneakers"
+    },
+    {
+      "key": "ankle-boots",
+      "gender": "women",
+      "category": "shoes",
+      "name": "Black Ankle Boots",
+      "describe": "women's black leather heeled ankle boots"
+    }
+  ]
+}

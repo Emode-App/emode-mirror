@@ -164,7 +164,7 @@ export function Kiosk() {
 
     // The rack is read fresh for each visit, so pieces the store adds or sells
     // out of show up without restarting the screen.
-    const hasRack = !!hello?.store?.hasRack;
+    const hasRack = !!(hello?.rack?.available ?? hello?.store?.hasRack);
     useEffect(() => {
         if (!session || !hasRack) return;
         call<{ items: RackItem[] }>({ action: 'catalog.list' })
@@ -209,7 +209,9 @@ export function Kiosk() {
         // tap each piece. Arriving at the rack, nothing is chosen for them.
         if (!autoSelected.current && state && tab === 'all') {
             autoSelected.current = true;
-            setSelected(state.garments.filter((g) => g.source !== 'catalog').slice(-maxPieces).map((g) => g.id));
+            // Keep anything already picked from the rack on the first screen.
+            const ownIds = state.garments.filter((g) => g.source !== 'catalog').map((g) => g.id);
+            setSelected((sel) => [...new Set([...sel, ...ownIds])].slice(0, maxPieces));
         }
         setWardrobeTab(tab);
         setStage({ name: 'wardrobe' });
@@ -364,7 +366,7 @@ export function Kiosk() {
             screen = <Unregistered message={stage.message} />;
             break;
         case 'attract':
-            screen = <Attract location={hello?.device.location ?? null} store={hello?.store ?? null} onStart={() => setStage({ name: 'consent' })} />;
+            screen = <Attract location={hello?.device.location ?? null} store={hello?.store ?? null} rackAvailable={hasRack} onStart={() => setStage({ name: 'consent' })} />;
             break;
         case 'consent':
             screen = <Consent busy={busy} onAccept={accept} onDecline={reset} />;
@@ -376,6 +378,13 @@ export function Kiosk() {
                     garments={garments}
                     linked={!!state?.linked}
                     store={hello?.store ?? null}
+                    rack={rack}
+                    rackPending={rackPending}
+                    selected={selected}
+                    maxPieces={maxPieces}
+                    error={error}
+                    onToggleRack={toggleRack}
+                    onTryOn={tryOn}
                     onContinue={() => openWardrobe('all')}
                     onBrowseRack={() => openWardrobe('rack')}
                     onCancel={() => finish('cancel')}
@@ -412,6 +421,7 @@ export function Kiosk() {
                     cameraId={camera.id}
                     rotation={camera.rotation}
                     busy={busy}
+                    framing={hello?.framing ?? null}
                     remote={session ? {
                         paired: !!state?.phonePaired,
                         setOpen: (open) => { call({ action: 'session.camera', sessionId: session.id, open }).catch(() => {}); },

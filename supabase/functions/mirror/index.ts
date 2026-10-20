@@ -206,6 +206,7 @@ async function clientHash(req: Request): Promise<string | null> {
 /** The app's wardrobe folders, in the mirror's vocabulary. */
 function categoryFromFolder(slug: string | null | undefined, name: string | null | undefined): Category | null {
     const s = `${slug || ''} ${name || ''}`.toLowerCase();
+    if (/\bsuit|tuxedo/.test(s)) return 'suits';
     if (/dress|jumpsuit|romper/.test(s)) return 'dresses';
     if (/shirt|top|tee|blouse|sweater|knit|hood/.test(s)) return 'tops';
     if (/jacket|coat|outer|blazer/.test(s)) return 'outerwear';
@@ -304,6 +305,25 @@ async function storeOf(device: any) {
     const { data } = await admin.from('mirror_stores')
         .select(STORE_FIELDS).eq('id', device.store_id).maybeSingle();
     return data;
+}
+
+// Emode's own rack, for mirrors without a store rack of their own.
+let houseId: string | null = null;
+async function houseStoreId(): Promise<string | null> {
+    if (houseId) return houseId;
+    const { data } = await admin.from('mirror_stores').select('id').eq('is_house', true).maybeSingle();
+    houseId = data?.id ?? null;
+    return houseId;
+}
+
+/**
+ * Where a mirror's rack comes from: its store's own catalog when it has one,
+ * otherwise Emode's house rack -- so every mirror, in a store or in an
+ * office, has something to try on without a phone.
+ */
+async function rackStoreId(store: any): Promise<string | null> {
+    if (store && await rackCount(store.id) > 0) return store.id;
+    return await houseStoreId();
 }
 
 async function rackCount(storeId: string) {
@@ -607,7 +627,7 @@ async function requireDevice(req: Request, body: any) {
     if (key.length < 20) throw new HttpError(401, 'This screen is not registered as an Emode Mirror', 'no_device');
 
     const { data: device } = await admin.from('mirror_devices')
-        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind, store_id')
+        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind, store_id, framing')
         .eq('key_hash', await sha256Hex(key))
         .maybeSingle();
     if (!device || !device.active) {
@@ -1053,12 +1073,37 @@ async function handle(req: Request, body: any): Promise<Response> {
         background(sweep());
         const store = await storeOf(device);
         maybeRefreshCatalog(store);
-        const rackSize = store ? await rackCount(store.id) : 0;
+        const rackId = await rackStoreId(store);
+        const rackSize = rackId ? await rackCount(rackId) : 0;
+        const ownRack = !!store && rackId === store.id;
         return json({
             device: { name: device.name, location: device.location, theme: device.theme, kind: device.kind },
-            store: store ? { name: store.name, logoUrl: store.logo_url, hasRack: rackSize > 0 } : null,
+            store: store ? { name: store.name, logoUrl: store.logo_url, hasRack: ownRack && rackSize > 0 } : null,
+            // What can be tried on without a phone: the store's rack, or Emode's.
+            rack: { available: rackSize > 0, house: rackSize > 0 && !ownRack },
+            framing: device.framing ?? null,
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
+    }
+
+    // How far the photo screen zooms in for this mirror's camera, set from
+    // /calibrate on the screen itself. Null goes back to the full frame.
+    if (action === 'device.framing') {
+        const device = await requireDevice(req, body);
+        const f = body?.framing;
+        let framing = null;
+        if (f) {
+            const zoom = Number(f.zoom);
+            const cx = Number(f.cx);
+            const cy = Number(f.cy);
+            if (![zoom, cx, cy].every(Number.isFinite) || zoom < 1 || zoom > 4 || cx < 0 || cx > 1 || cy < 0 || cy > 1) {
+                throw new HttpError(400, 'Invalid framing');
+            }
+            const r = (n: number) => Math.round(n * 1000) / 1000;
+            framing = { zoom: r(zoom), cx: r(cx), cy: r(cy) };
+        }
+        await admin.from('mirror_devices').update({ framing }).eq('id', device.id);
+        return json({ ok: true, framing });
     }
 
     if (action === 'session.start') {
@@ -1229,11 +1274,11 @@ async function handle(req: Request, body: any): Promise<Response> {
     // ── A store's rack, tried on without a phone ──────────────────────────
     if (action === 'catalog.list') {
         const device = await requireDevice(req, body);
-        const store = await storeOf(device);
-        if (!store) return json({ items: [] });
+        const rackId = await rackStoreId(await storeOf(device));
+        if (!rackId) return json({ items: [] });
         const { data } = await admin.from('mirror_store_products')
-            .select('id, name, brand, price, currency, image_url, category')
-            .eq('store_id', store.id).eq('is_active', true)
+            .select('id, name, brand, price, currency, image_url, category, gender')
+            .eq('store_id', rackId).eq('is_active', true)
             .order('position')
             .limit(MAX_RACK_ITEMS);
         return json({
@@ -1245,6 +1290,7 @@ async function handle(req: Request, body: any): Promise<Response> {
                 currency: p.currency,
                 imageUrl: p.image_url,
                 category: p.category,
+                gender: p.gender,
             })),
         });
     }
@@ -1253,8 +1299,8 @@ async function handle(req: Request, body: any): Promise<Response> {
         const device = await requireDevice(req, body);
         const session = await requireKioskSession(device, body?.sessionId);
         const productId = requireUuid(body?.productId, 'product');
-        const store = await storeOf(device);
-        if (!store) throw new HttpError(404, 'This mirror has no rack');
+        const rackId = await rackStoreId(await storeOf(device));
+        if (!rackId) throw new HttpError(404, 'This mirror has no rack');
 
         // Picking the same piece twice should not fill the mirror with copies.
         const { data: existing } = await admin.from('mirror_garments')
@@ -1267,7 +1313,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         // Only this store's own rack, whatever id the screen sends.
         const { data: product } = await admin.from('mirror_store_products')
             .select('id, name, brand, image_url, product_url, category, is_active')
-            .eq('id', productId).eq('store_id', store.id).maybeSingle();
+            .eq('id', productId).eq('store_id', rackId).maybeSingle();
         if (!product || !product.is_active) throw new HttpError(404, 'That piece is no longer on the rack');
 
         let bytes: Uint8Array | null = null;
@@ -1357,7 +1403,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         const topIds = Object.entries(rackCounts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id]) => id);
         const { data: products } = topIds.length
             ? await admin.from('mirror_store_products')
-                .select('id, name, price, currency, image_url').eq('store_id', store.id).in('id', topIds)
+                .select('id, name, price, currency, image_url').in('id', topIds)
             : { data: [] as any[] };
         const rack = await rackStatus(store);
 

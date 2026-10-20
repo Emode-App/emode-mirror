@@ -76,7 +76,7 @@ function StoreLine({ store, className = '' }: { store: StoreInfo; className?: st
     );
 }
 
-export function Attract({ location, store, onStart }: { location: string | null; store: StoreInfo | null; onStart: () => void }) {
+export function Attract({ location, store, rackAvailable, onStart }: { location: string | null; store: StoreInfo | null; rackAvailable: boolean; onStart: () => void }) {
     return (
         <button type="button" onClick={onStart} className="relative flex h-full w-full flex-col items-center text-center">
             <Bloom className="top-[42%]" />
@@ -89,7 +89,9 @@ export function Attract({ location, store, onStart }: { location: string | null;
                 <p className="max-w-[28rem] text-[1.05rem] leading-[1.45] text-muted">
                     {store?.hasRack
                         ? `Try on ${store.name}'s pieces — or send your own from your phone.`
-                        : 'Send clothes from your phone. See them on you, right here.'}
+                        : rackAvailable
+                            ? 'Pick from the rack or send clothes from your phone. See them on you, right here.'
+                            : 'Send clothes from your phone. See them on you, right here.'}
                 </p>
             </div>
 
@@ -190,11 +192,39 @@ function LinkedNote() {
     );
 }
 
+/** The quick-pick rows under the QR code, in this order when the rack has them. */
+const PICK_ROWS: Category[] = ['suits', 'tops', 'bottoms', 'shoes', 'dresses', 'outerwear', 'accessories'];
+
+function QuickPick({ item, selectedIndex, pending, onToggle }: { item: RackItem; selectedIndex: number; pending: boolean; onToggle: () => void }) {
+    const selected = selectedIndex >= 0;
+    return (
+        <button type="button" onClick={onToggle} disabled={pending} aria-label={item.name}
+            className={`relative aspect-[3/4] overflow-hidden rounded-[0.6rem] bg-white transition active:scale-[0.96]
+                ${selected ? 'ring-[0.16rem] ring-gold' : ''}`}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={item.imageUrl} alt="" loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-contain p-[0.15rem]" />
+            {selected && (
+                <span className="absolute right-[0.25rem] top-[0.25rem] grid h-[1.25rem] w-[1.25rem] place-items-center rounded-full bg-gold font-display text-[0.62rem] font-bold text-obsidian">
+                    {selectedIndex + 1}
+                </span>
+            )}
+            {pending && <span className="absolute inset-0 grid place-items-center bg-white/60 text-[0.5rem] text-obsidian animate-soft-pulse">Adding…</span>}
+        </button>
+    );
+}
+
 export function Pair({
     phoneUrl,
     garments,
     linked,
     store,
+    rack,
+    rackPending,
+    selected,
+    maxPieces,
+    error,
+    onToggleRack,
+    onTryOn,
     onContinue,
     onBrowseRack,
     onCancel,
@@ -203,57 +233,127 @@ export function Pair({
     garments: Garment[];
     linked: boolean;
     store: StoreInfo | null;
+    rack: RackItem[];
+    rackPending: string | null;
+    selected: string[];
+    maxPieces: number;
+    error: string | null;
+    onToggleRack: (productId: string) => void;
+    onTryOn: () => void;
     onContinue: () => void;
     onBrowseRack: () => void;
     onCancel: () => void;
 }) {
     const own = garments.filter((g) => g.source !== 'catalog');
+    const garmentForProduct = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const g of garments) if (g.productId) m.set(g.productId, g.id);
+        return m;
+    }, [garments]);
+
+    // Quick picks: a few rows by category, men's on the left and women's on
+    // the right when the rack says who a piece is for, six across otherwise.
+    // Enough to build a fit without a phone; the whole rack is one tap away.
+    const gendered = rack.some((i) => i.gender);
+    const rows = PICK_ROWS.filter((c) => rack.some((i) => i.category === c)).slice(0, 4).map((category) => {
+        const inRow = rack.filter((i) => i.category === category);
+        return gendered
+            ? { category, left: inRow.filter((i) => i.gender === 'men').slice(0, 3), right: inRow.filter((i) => i.gender === 'women').slice(0, 3) }
+            : { category, left: inRow.slice(0, 6), right: [] as RackItem[] };
+    });
+    const shownCount = rows.reduce((n, r) => n + r.left.length + r.right.length, 0);
+    const picked = selected.length;
+    const tile = (item: RackItem) => {
+        const gid = garmentForProduct.get(item.id);
+        return (
+            <QuickPick key={item.id} item={item} pending={rackPending === item.id}
+                selectedIndex={gid ? selected.indexOf(gid) : -1} onToggle={() => onToggleRack(item.id)} />
+        );
+    };
+
     return (
-        <div className="flex h-full flex-col items-center px-[3rem] pt-[6.5rem] text-center">
-            <Eyebrow>Step one</Eyebrow>
-            <Title className="mt-[0.8rem]">Bring your clothes.</Title>
-            <p className="mt-[1rem] max-w-[28rem] text-[1rem] leading-[1.45] text-muted">
-                Scan with your phone&apos;s camera, then send screenshots or product links — or pieces from your Emode wardrobe.
-            </p>
-
-            <Qr value={phoneUrl} className="mt-[2.4rem] w-[15rem]" />
-            {linked && <div className="mt-[1.2rem]"><LinkedNote /></div>}
-
-            <div className="mt-[2.4rem] w-full">
-                {own.length === 0 ? (
-                    <p className="text-[0.95rem] text-faint animate-soft-pulse">Waiting for your first piece…</p>
-                ) : (
-                    <>
-                        <p className="mb-[0.9rem] font-display text-[0.95rem] font-medium">
-                            {own.length} {own.length === 1 ? 'piece' : 'pieces'} added
-                        </p>
-                        <div className="flex justify-center gap-[0.7rem]">
-                            {own.slice(-5).map((g) => (
-                                <div key={g.id} className="w-[5.2rem] animate-rise">
-                                    <GarmentTile garment={g} size="sm" />
-                                </div>
+        <div className="flex h-full flex-col px-[2.6rem] pt-[4.4rem]">
+            <div className="flex items-start justify-between gap-[1.6rem]">
+                <div className="min-w-0">
+                    <Eyebrow>Step one</Eyebrow>
+                    <Title className="mt-[0.7rem] text-[2.4rem]">Bring your clothes.</Title>
+                    <p className="mt-[0.7rem] text-[0.92rem] leading-[1.45] text-muted">
+                        Scan with your phone to send screenshots or product links — or pieces from your Emode wardrobe.
+                    </p>
+                    {linked && <div className="mt-[0.8rem]"><LinkedNote /></div>}
+                    {own.length > 0 ? (
+                        <div className="mt-[1rem] flex items-center gap-[0.5rem]">
+                            {own.slice(-4).map((g) => (
+                                <div key={g.id} className="w-[2.8rem] animate-rise"><GarmentTile garment={g} size="sm" /></div>
                             ))}
+                            <span className="ml-[0.3rem] text-[0.78rem] text-muted">{own.length} from your phone</span>
                         </div>
-                    </>
-                )}
+                    ) : (
+                        <p className="mt-[1rem] text-[0.8rem] text-faint animate-soft-pulse">Waiting for your phone…</p>
+                    )}
+                </div>
+                <Qr value={phoneUrl} className="w-[10.5rem] shrink-0 p-[0.5rem]" />
             </div>
 
-            <div className="mt-auto mb-[7rem] flex flex-col items-center gap-[0.9rem]">
-                <KioskButton disabled={own.length === 0} onClick={onContinue}>Continue</KioskButton>
-                {/* A shopper without a phone to hand can still try on what is
-                    in the store -- the rack lives on the mirror itself. */}
-                {store?.hasRack && (
-                    <KioskButton tone="secondary" onClick={onBrowseRack}>
-                        Try on {store.name} pieces — no phone needed
+            {rows.length > 0 && (
+                <div className="mt-[1.8rem] flex min-h-0 flex-1 flex-col">
+                    <div className="flex items-baseline justify-between">
+                        <p className="font-display text-[1.1rem] font-semibold">Or build a fit right here</p>
+                        <span className="text-[0.7rem] text-faint">Tap up to {maxPieces}</span>
+                    </div>
+                    {gendered && (
+                        <div className="mt-[0.8rem] grid grid-cols-2 gap-[1.2rem] text-center text-[0.62rem] font-semibold uppercase tracking-[0.3em] text-gold">
+                            <span>Men</span>
+                            <span>Women</span>
+                        </div>
+                    )}
+                    <div className="mt-[0.4rem] flex min-h-0 flex-col gap-[0.75rem] overflow-y-auto pb-[0.4rem] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                        {rows.map((r) => (
+                            <div key={r.category}>
+                                <p className="mb-[0.3rem] text-[0.62rem] font-semibold uppercase tracking-[0.2em] text-muted">{CATEGORY_LABELS[r.category]}</p>
+                                {gendered ? (
+                                    <div className="grid grid-cols-2 gap-[1.2rem]">
+                                        <div className="grid grid-cols-3 gap-[0.45rem]">{r.left.map(tile)}</div>
+                                        <div className="grid grid-cols-3 gap-[0.45rem]">{r.right.map(tile)}</div>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-6 gap-[0.45rem]">{r.left.map(tile)}</div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                    {rack.length > shownCount && (
+                        <button type="button" onClick={onBrowseRack}
+                            className="mt-[0.5rem] self-center text-[0.78rem] font-semibold text-muted underline underline-offset-[0.25rem]">
+                            See all {rack.length}{store?.hasRack ? ` from ${store.name}` : ''}
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {error && <p className="mt-[0.8rem] rounded-[0.6rem] bg-surface px-[1rem] py-[0.6rem] text-center text-[0.8rem]">{error}</p>}
+
+            <div className={`mb-[4.5rem] flex flex-col items-center gap-[0.7rem] ${rows.length ? 'mt-[1.2rem]' : 'mt-auto'}`}>
+                {picked > 0 ? (
+                    <KioskButton onClick={onTryOn}>Try it on · {picked} {picked === 1 ? 'piece' : 'pieces'}</KioskButton>
+                ) : (
+                    <KioskButton disabled={own.length === 0} onClick={onContinue}>
+                        {own.length > 0 ? 'Continue' : rows.length ? 'Tap a piece to start' : 'Continue'}
                     </KioskButton>
                 )}
-                <KioskButton tone="ghost" onClick={onCancel}>Cancel</KioskButton>
+                <div className="flex gap-[0.6rem]">
+                    {picked > 0 && own.length > 0 && (
+                        <KioskButton tone="secondary" className="min-w-[11rem]" onClick={onContinue}>Add my phone pieces</KioskButton>
+                    )}
+                    <KioskButton tone="ghost" className="min-w-[8rem]" onClick={onCancel}>Cancel</KioskButton>
+                </div>
             </div>
         </div>
     );
 }
 
 const CATEGORY_LABELS: Record<Category, string> = {
+    suits: 'Suits',
     tops: 'Tops',
     outerwear: 'Outerwear',
     bottoms: 'Bottoms',
@@ -262,7 +362,7 @@ const CATEGORY_LABELS: Record<Category, string> = {
     accessories: 'Accessories',
     other: 'Other',
 };
-const CATEGORY_ORDER: Category[] = ['tops', 'outerwear', 'bottoms', 'dresses', 'shoes', 'accessories', 'other'];
+const CATEGORY_ORDER: Category[] = ['suits', 'tops', 'outerwear', 'bottoms', 'dresses', 'shoes', 'accessories', 'other'];
 // A retailer's rack can run to hundreds of pieces; render it a screenful at a time.
 const RACK_PAGE = 48;
 
@@ -392,7 +492,7 @@ export function Wardrobe({
                                     className={`shrink-0 rounded-full px-[1rem] py-[0.5rem] font-display text-[0.75rem] font-semibold transition
                                         ${tab === c ? 'bg-fg text-bg' : 'border-[0.06rem] border-line text-muted'}`}>
                                     {c === 'rack'
-                                        ? `${store?.name ?? 'In store'} ${rack.length}`
+                                        ? `${store?.hasRack ? store.name : 'The rack'} ${rack.length}`
                                         : c === 'all'
                                             ? `${hasRack ? 'Yours' : 'All'} ${own.length}`
                                             : `${CATEGORY_LABELS[c]} ${counts.get(c)}`}

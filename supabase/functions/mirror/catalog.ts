@@ -11,7 +11,7 @@
 // Pure functions only (no network, no Deno APIs) so the parsing can be tested
 // on its own. Fetching lives in index.ts, behind the public-address check.
 
-export const CATEGORIES = ['tops', 'outerwear', 'bottoms', 'dresses', 'shoes', 'accessories', 'other'] as const;
+export const CATEGORIES = ['suits', 'tops', 'outerwear', 'bottoms', 'dresses', 'shoes', 'accessories', 'other'] as const;
 export type Category = typeof CATEGORIES[number];
 
 export interface FeedItem {
@@ -35,6 +35,9 @@ export function categoryFromText(...texts: (string | null | undefined)[]): Categ
     for (const raw of texts) {
         const s = ` ${(raw || '').toLowerCase()} `;
         if (s.trim() === '') continue;
+        // A whole suit, not one part of one ("suit trousers" are trousers).
+        if (/\b(suits?|pantsuits?|tuxedos?)\b(?!\s*(trousers?|pants?|jackets?|blazers?|vests?|waistcoats?|shirts?|skirts?)\b)/.test(s)
+            && !/\b(track|sweat|swim|body|jump)\s?suits?\b/.test(s)) return 'suits';
         if (/\b(dress(es)?|jumpsuits?|rompers?|playsuits?|gowns?|overalls?|dungarees)\b/.test(s)) return 'dresses';
         if (/\b(jackets?|shackets?|coats?|overcoats?|parkas?|blazers?|puffers?|anoraks?|windbreakers?|trench|bombers?|gilets?|outerwear)\b/.test(s)) return 'outerwear';
         if (/\b(pants?|trousers?|jeans?|denim shorts|shorts|skirts?|skorts?|leggings?|joggers?|chinos?|sweatpants?|culottes?|cargos?|bottoms)\b/.test(s)) return 'bottoms';

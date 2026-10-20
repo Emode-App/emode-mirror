@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { captureFrame, openCamera } from '@/lib/camera';
+import { captureFrame, openCamera, type Framing } from '@/lib/camera';
 import type { Rotation } from '@/lib/settings';
+import { FramedVideo } from './FramedVideo';
 import { KioskButton } from './ui';
 
 type Phase = 'starting' | 'live' | 'countdown' | 'review' | 'error';
@@ -56,6 +57,7 @@ export function Capture({
     cameraId,
     rotation,
     busy,
+    framing,
     remote,
     onUse,
     onCancel,
@@ -63,6 +65,8 @@ export function Capture({
     cameraId: string | null;
     rotation: Rotation;
     busy: boolean;
+    /** This mirror's zoom onto where people stand; null for the whole picture. */
+    framing?: Framing | null;
     remote?: RemoteShutter;
     onUse: (dataUrl: string) => void;
     onCancel: () => void;
@@ -112,11 +116,11 @@ export function Capture({
     const snap = useCallback(() => {
         const video = videoRef.current;
         if (!video || !video.videoWidth) return;
-        setStill(captureFrame(video, rotation));
+        setStill(captureFrame(video, rotation, framing));
         setFlash((n) => n + 1);
         tone(audioRef.current, 1320, 180);
         setPhase('review');
-    }, [rotation]);
+    }, [rotation, framing]);
 
     useEffect(() => {
         if (phase !== 'countdown') return;
@@ -167,23 +171,10 @@ export function Capture({
     }, [waiting, paired, startCountdown]);
     useEffect(() => () => remoteRef.current?.setOpen(false), []);
 
-    const rotated = rotation === 90 || rotation === 270;
-
     return (
         <div className="absolute inset-0">
-            {/* Live, mirrored. Rotated first for a camera mounted on its side. */}
-            <video
-                ref={videoRef}
-                muted
-                playsInline
-                className="absolute left-1/2 top-1/2 object-cover"
-                style={{
-                    width: rotated ? '177.78%' : '100%',
-                    height: rotated ? '56.25%' : '100%',
-                    transform: `translate(-50%, -50%) rotate(${rotation}deg) scaleX(-1)`,
-                    opacity: phase === 'review' ? 0 : 1,
-                }}
-            />
+            {/* Live, mirrored, rotated for the mount, zoomed to the framing. */}
+            <FramedVideo videoRef={videoRef} rotation={rotation} framing={framing} hidden={phase === 'review'} />
 
             {still && phase === 'review' && (
                 // eslint-disable-next-line @next/next/no-img-element

@@ -212,7 +212,7 @@ export default function StoreDashboardPage() {
 }
 
 const CATEGORY_NAMES: Record<Category, string> = {
-    tops: 'tops', outerwear: 'outerwear', bottoms: 'bottoms', dresses: 'dresses',
+    suits: 'suits', tops: 'tops', outerwear: 'outerwear', bottoms: 'bottoms', dresses: 'dresses',
     shoes: 'shoes', accessories: 'accessories', other: 'other',
 };
 

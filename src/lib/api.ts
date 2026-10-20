@@ -11,7 +11,9 @@ const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 export type Theme = 'dark' | 'light';
 
-export type Category = 'tops' | 'outerwear' | 'bottoms' | 'dresses' | 'shoes' | 'accessories' | 'other';
+import type { Framing } from './camera';
+
+export type Category = 'suits' | 'tops' | 'outerwear' | 'bottoms' | 'dresses' | 'shoes' | 'accessories' | 'other';
 
 export interface Garment {
     id: string;
@@ -66,6 +68,10 @@ export interface DeviceHello {
     device: { name: string; location: string | null; theme: Theme };
     /** The store this mirror belongs to, if any. Null for Emode's own mirrors. */
     store: StoreInfo | null;
+    /** What can be tried on without a phone: the store's own rack, or Emode's house rack. */
+    rack: { available: boolean; house: boolean };
+    /** How far the photo zooms in for this mirror's camera, set at /calibrate. */
+    framing: Framing | null;
     limits: { garmentsPerLook: number; idleMinutes: number; retainMinutes: number };
 }
 
@@ -77,6 +83,8 @@ export interface RackItem {
     currency: string | null;
     imageUrl: string;
     category: Category;
+    /** Who it's cut for, when the rack says (Emode's house rack does). */
+    gender: 'women' | 'men' | null;
 }
 
 export interface RackStatus {
