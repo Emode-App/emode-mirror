@@ -6,8 +6,11 @@
 import type { Category } from './api';
 
 export const LIVE_MODEL = 'lucy-vton-latest';
-/** How long one live stretch lasts before it stops on its own (cost cap). */
-export const LIVE_SECONDS = 120;
+/**
+ * How long one live try-on lasts before it stops on its own. Live is billed
+ * by the second, so each try-on is a short look, not a session.
+ */
+export const LIVE_SECONDS = 15;
 
 export interface LivePiece {
     /** Stable identity within an outfit: a garment id, or "p:" + a rack item id. */
