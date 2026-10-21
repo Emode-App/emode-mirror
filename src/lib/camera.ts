@@ -69,6 +69,52 @@ export function clampFraming(framing: Framing | null | undefined): Framing {
     return { zoom, cx: clamp(framing?.cx), cy: clamp(framing?.cy) };
 }
 
+/** The part of the (rotated) camera picture a framing keeps, in sensor pixels. */
+function framedCrop(video: HTMLVideoElement, rotation: Rotation, framing?: Framing | null) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const rotated = rotation === 90 || rotation === 270;
+    const srcW = rotated ? vh : vw;
+    const srcH = rotated ? vw : vh;
+
+    // Largest 9:16 rectangle that fits the (rotated) frame...
+    let baseW = srcW;
+    let baseH = (srcW * 16) / 9;
+    if (baseH > srcH) {
+        baseH = srcH;
+        baseW = (srcH * 9) / 16;
+    }
+    // ...then the framing's window within it, in the preview's (mirrored) terms.
+    const { zoom, cx, cy } = clampFraming(framing);
+    return { vw, vh, cropW: baseW / zoom, cropH: baseH / zoom, offX: (cx - 0.5) * baseW, offY: (cy - 0.5) * baseH };
+}
+
+/**
+ * Draw the framed camera picture into a 9:16 canvas of any size: rotated for
+ * the mount, cropped to the framing, and mirrored or not. The still photo is
+ * mirrored here; Live sends it unmirrored and mirrors what comes back.
+ */
+export function drawFramed(
+    ctx: CanvasRenderingContext2D, video: HTMLVideoElement, rotation: Rotation,
+    framing: Framing | null | undefined, outW: number, outH: number, mirrored: boolean,
+) {
+    const { vw, vh, cropH, offX, offY } = framedCrop(video, rotation, framing);
+    const scale = outH / cropH;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.translate(outW / 2, outH / 2);
+    if (mirrored) ctx.scale(-1, 1);
+    ctx.scale(scale, scale);
+    // The framing's centre is measured in the mirrored preview; on the sensor
+    // it sits the other way round horizontally.
+    ctx.translate(offX, -offY);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+    ctx.restore();
+}
+
 /**
  * One frame as a portrait JPEG, flipped like a mirror.
  *
@@ -80,42 +126,13 @@ export function clampFraming(framing: Framing | null | undefined): Framing {
  * of the picture the preview showed.
  */
 export function captureFrame(video: HTMLVideoElement, rotation: Rotation, framing?: Framing | null, maxHeight = 1920): string {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const rotated = rotation === 90 || rotation === 270;
-    const srcW = rotated ? vh : vw;
-    const srcH = rotated ? vw : vh;
-
-    // Largest 9:16 rectangle that fits the (rotated) frame.
-    let baseW = srcW;
-    let baseH = (srcW * 16) / 9;
-    if (baseH > srcH) {
-        baseH = srcH;
-        baseW = (srcH * 9) / 16;
-    }
-
-    // Then the framing's window within it, in the preview's (mirrored) terms.
-    const { zoom, cx, cy } = clampFraming(framing);
-    const cropW = baseW / zoom;
-    const cropH = baseH / zoom;
-    const offX = (cx - 0.5) * baseW; // mirrored: right in the preview is left on the sensor
-    const offY = (cy - 0.5) * baseH;
-
+    const { cropW, cropH } = framedCrop(video, rotation, framing);
     const scale = Math.min(1, maxHeight / cropH);
     const outW = Math.round(cropW * scale);
     const outH = Math.round(cropH * scale);
-
     const canvas = document.createElement('canvas');
     canvas.width = outW;
     canvas.height = outH;
-    const ctx = canvas.getContext('2d')!;
-
-    ctx.translate(outW / 2, outH / 2);
-    ctx.scale(-1, 1);
-    ctx.scale(scale, scale);
-    ctx.translate(offX, -offY);
-    ctx.rotate((rotation * Math.PI) / 180);
-    ctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
-
+    drawFramed(canvas.getContext('2d')!, video, rotation, framing, outW, outH, true);
     return canvas.toDataURL('image/jpeg', 0.9);
 }

@@ -159,7 +159,7 @@ export function Consent({ busy, onAccept, onDecline }: { busy: boolean; onAccept
         ['One photo', 'The mirror takes a single photo of you to dress you in the clothes you choose.'],
         ['Deleted when you finish', 'Your photo is erased the moment you tap Finish, or if you walk away.'],
         ['Yours for an hour', 'Your looks wait on your phone for an hour so you can save them, then they’re deleted too.'],
-        ['Made with AI', 'Your photo and clothes are sent to an AI image service to create each look.'],
+        ['Made with AI', 'Your photo and clothes are sent to AI services to create each look — and in Live, the camera’s video while Live is on.'],
     ];
     return (
         <div className="flex h-full flex-col px-[3.4rem] pt-[8rem]">
@@ -272,6 +272,7 @@ export function Pair({
     error,
     onToggleRack,
     onTryOn,
+    onLive,
     onContinue,
     onBrowseRack,
     onCancel,
@@ -287,6 +288,8 @@ export function Pair({
     error: string | null;
     onToggleRack: (productId: string) => void;
     onTryOn: () => void;
+    /** Present when this mirror offers Live. */
+    onLive?: () => void;
     onContinue: () => void;
     onBrowseRack: () => void;
     onCancel: () => void;
@@ -389,6 +392,9 @@ export function Pair({
                     </KioskButton>
                 )}
                 <div className="flex gap-[0.6rem]">
+                    {picked > 0 && onLive && (
+                        <KioskButton tone="secondary" className="min-w-[11rem]" onClick={onLive}>See it live</KioskButton>
+                    )}
                     {picked > 0 && own.length > 0 && (
                         <KioskButton tone="secondary" className="min-w-[11rem]" onClick={onContinue}>Add my phone pieces</KioskButton>
                     )}
@@ -451,6 +457,7 @@ export function Wardrobe({
     onToggle,
     onToggleRack,
     onTryOn,
+    onLive,
     onNewPhoto,
     onBackToLooks,
     onFinish,
@@ -470,6 +477,7 @@ export function Wardrobe({
     onToggle: (id: string) => void;
     onToggleRack: (productId: string) => void;
     onTryOn: () => void;
+    onLive?: () => void;
     onNewPhoto: () => void;
     onBackToLooks: () => void;
     onFinish: () => void;
@@ -594,6 +602,7 @@ export function Wardrobe({
                     {selected.length === 0 ? 'Choose a piece' : `Try it on${selected.length > 1 ? ` · ${selected.length} pieces` : ''}`}
                 </KioskButton>
                 <div className="flex gap-[0.6rem]">
+                    {onLive && selected.length > 0 && <KioskButton tone="secondary" className="min-w-[9rem]" onClick={onLive}>See it live</KioskButton>}
                     {hasPhoto && <KioskButton tone="secondary" className="min-w-[11rem]" onClick={onNewPhoto}>New photo</KioskButton>}
                     {hasLooks && <KioskButton tone="secondary" className="min-w-[11rem]" onClick={onBackToLooks}>My looks</KioskButton>}
                     <KioskButton tone="ghost" className="min-w-[8rem]" onClick={onFinish}>Finish</KioskButton>
@@ -674,6 +683,7 @@ export function Result({
     share,
     onChangeOutfit,
     onNewPhoto,
+    onLive,
     onFinish,
 }: {
     look: Look;
@@ -683,6 +693,7 @@ export function Result({
     onSelectLook: (id: string) => void;
     onChangeOutfit: () => void;
     onNewPhoto: () => void;
+    onLive?: () => void;
     onFinish: () => void;
 }) {
     const done = looks.filter((l) => l.status === 'succeeded' && l.imageUrl);
@@ -727,7 +738,10 @@ export function Result({
                         <KioskButton tone="secondary" className="min-w-[13rem]" onClick={onChangeOutfit}>Change outfit</KioskButton>
                         <KioskButton tone="secondary" className="min-w-[13rem]" onClick={onNewPhoto}>New photo</KioskButton>
                     </div>
-                    <KioskButton onClick={onFinish}>Finish</KioskButton>
+                    <div className="flex gap-[0.6rem]">
+                        {onLive && <KioskButton tone="secondary" className="min-w-[13rem]" onClick={onLive}>See it live</KioskButton>}
+                        <KioskButton className={onLive ? 'min-w-[13rem]' : ''} onClick={onFinish}>Finish</KioskButton>
+                    </div>
                     <p className="text-[0.7rem] text-faint">When you finish, scan the code to take your looks home.</p>
                 </div>
 

@@ -22,6 +22,8 @@ export interface Garment {
     productId: string | null;
     /** Filled in a few seconds after an upload or link, by a classifier; immediate for wardrobe pieces. */
     category: Category | null;
+    /** A sentence describing the piece, which Live mode dresses people from. */
+    description: string | null;
     title: string | null;
     productUrl: string | null;
     imageUrl: string | null;
@@ -80,6 +82,8 @@ export interface DeviceHello {
     framing: Framing | null;
     /** A credit line for this mirror (the workplace demo), with a link to the person's profile. */
     credit: MirrorCredit | null;
+    /** Whether this mirror offers Live, the realtime try-on. */
+    live?: boolean;
     limits: { garmentsPerLook: number; idleMinutes: number; retainMinutes: number };
 }
 
@@ -93,6 +97,7 @@ export interface RackItem {
     category: Category;
     /** Who it's cut for, when the rack says (Emode's house rack does). */
     gender: 'women' | 'men' | null;
+    description?: string | null;
 }
 
 export interface RackStatus {

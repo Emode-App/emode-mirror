@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { mirrorCall, MirrorError, type DeviceHello, type RackItem, type SessionState, type Theme } from '@/lib/api';
 import { readLaunchParams, settings, type LaunchParams } from '@/lib/settings';
 import { Capture } from './Capture';
+import { Live } from './Live';
+import type { LivePiece } from '@/lib/live';
 import { Attract, Consent, Ending, Generating, Pair, Result, StillThere, Unregistered, Visitor, Wardrobe } from './Screens';
 import { EMODE_APP_URL, RETAILERS_URL } from '@/lib/links';
 
@@ -18,6 +20,7 @@ type Stage =
     | { name: 'capture' }
     | { name: 'generating'; lookId: string }
     | { name: 'result'; lookId: string }
+    | { name: 'live' }
     | { name: 'ending' };
 
 // How long a screen may sit untouched before the mirror asks, and how long it
@@ -43,6 +46,8 @@ export function Kiosk() {
     const [error, setError] = useState<string | null>(null);
     const [idleLeft, setIdleLeft] = useState<number | null>(null);
     const [ending, setEnding] = useState<{ phoneUrl: string | null; retainUntil: string | null } | null>(null);
+    // The pieces a Live stretch started from.
+    const [liveIds, setLiveIds] = useState<string[]>([]);
     // The store's rack, when this mirror belongs to a store that has one.
     const [rack, setRack] = useState<RackItem[]>([]);
     const [rackPending, setRackPending] = useState<string | null>(null);
@@ -355,6 +360,14 @@ export function Kiosk() {
     const garments = state?.garments ?? [];
     const looks = state?.looks ?? [];
     const piecesFor = (ids: string[]) => ids.map((id) => garments.find((g) => g.id === id)).filter(Boolean) as typeof garments;
+
+    // Live: the realtime try-on, offered only where the mirror has it set up.
+    const goLive = (ids: string[]) => {
+        if (!ids.length) return;
+        setLiveIds(ids);
+        setStage({ name: 'live' });
+    };
+    const onLive = hello?.live && session ? () => goLive(selected) : undefined;
     const latestLook = [...looks].reverse().find((l) => l.status === 'succeeded' && l.imageUrl);
 
     let screen: React.ReactNode = null;
@@ -388,6 +401,7 @@ export function Kiosk() {
                     error={error}
                     onToggleRack={toggleRack}
                     onTryOn={tryOn}
+                    onLive={onLive}
                     onContinue={() => openWardrobe('all')}
                     onBrowseRack={() => openWardrobe('rack')}
                     onCancel={() => finish('cancel')}
@@ -412,9 +426,45 @@ export function Kiosk() {
                     onToggle={toggle}
                     onToggleRack={toggleRack}
                     onTryOn={tryOn}
+                    onLive={onLive}
                     onNewPhoto={() => setStage({ name: 'capture' })}
                     onBackToLooks={() => latestLook && setStage({ name: 'result', lookId: latestLook.id })}
                     onFinish={() => finish('finish')}
+                />
+            );
+            break;
+        case 'live':
+            screen = session && (
+                <Live
+                    cameraId={camera.id}
+                    rotation={camera.rotation}
+                    framing={hello?.framing ?? null}
+                    pieces={piecesFor(liveIds).map((g): LivePiece => ({
+                        name: g.title, description: g.description, category: g.category, imageUrl: g.imageUrl,
+                    }))}
+                    picks={rack.slice(0, 30)}
+                    getToken={() => call<{ apiKey: string }>({ action: 'live.token', sessionId: session.id }).then((r) => r.apiKey)}
+                    onLog={(phase, seconds) => { call({ action: 'live.log', sessionId: session.id, phase, seconds }).catch(() => {}); }}
+                    onPhoto={async (pick) => {
+                        lastTouch.current = Date.now();
+                        if (pick) {
+                            // A quick pick worn live becomes a piece of the visit, then the photo.
+                            try {
+                                const r = await call<{ garmentId: string }>({ action: 'garment.from_catalog', sessionId: session.id, productId: pick.id });
+                                setSelected([r.garmentId]);
+                                setState(await call<SessionState>({ action: 'session.state', sessionId: session.id }));
+                            } catch (e) {
+                                setError((e as Error).message);
+                            }
+                        } else {
+                            setSelected(liveIds.slice(0, maxPieces));
+                        }
+                        setStage({ name: 'capture' });
+                    }}
+                    onDone={() => {
+                        lastTouch.current = Date.now();
+                        setStage({ name: 'wardrobe' });
+                    }}
                 />
             );
             break;
@@ -459,6 +509,7 @@ export function Kiosk() {
                     onSelectLook={(id) => setStage({ name: 'result', lookId: id })}
                     onChangeOutfit={() => setStage({ name: 'wardrobe' })}
                     onNewPhoto={() => setStage({ name: 'capture' })}
+                    onLive={hello?.live ? () => goLive(look.garmentIds) : undefined}
                     onFinish={() => finish('finish')}
                 />
             ) : null;

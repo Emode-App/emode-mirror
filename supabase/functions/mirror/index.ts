@@ -27,6 +27,11 @@ import {
 } from './catalog.ts';
 
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY') || '';
+// Live try-on (Decart Lucy VTON). Without a key the mirror simply has no Live
+// button. The key stays here; the kiosk gets a one-minute token per connect.
+const DECART_API_KEY = Deno.env.get('DECART_API_KEY') || '';
+const DECART_LIVE_MODELS = ['lucy-vton-latest', 'lucy-vton-3.6'];
+const MAX_LIVE_CONNECTS_PER_VISIT = 12;
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const IMAGE_MODEL = Deno.env.get('MIRROR_IMAGE_MODEL')
     || Deno.env.get('GEMINI_IMAGE_MODEL')
@@ -160,7 +165,7 @@ function touch(sessionId: string) {
 type EventType =
     | 'visit_started' | 'phone_paired' | 'garment_added' | 'look_generated' | 'look_failed'
     | 'visit_ended' | 'product_link_opened' | 'app_cta_tapped' | 'account_linked'
-    | 'wardrobe_sent' | 'look_saved_to_account';
+    | 'wardrobe_sent' | 'look_saved_to_account' | 'live_started' | 'live_ended';
 
 /**
  * Count something that happened at a mirror.
@@ -219,14 +224,20 @@ function categoryFromFolder(slug: string | null | undefined, name: string | null
 const CLASSIFY_MODEL = Deno.env.get('MIRROR_CLASSIFY_MODEL') || 'gemini-2.5-flash';
 
 /**
- * Sort an uploaded or linked piece into a category, after the fact.
+ * Sort an uploaded or linked piece into a category and describe it, after the
+ * fact.
  *
- * A cheap text answer from a small model, run in the background so the upload
- * itself never waits on it. If it fails the piece simply lands under "Other" --
- * the tabs are a convenience, not a gate.
+ * A cheap answer from a small model, run in the background so the upload
+ * itself never waits on it. The category drives the tabs; the description
+ * drives Live mode, which dresses the shopper from words as well as the
+ * photo. Only fields still empty are filled. If it fails the piece lands
+ * under "Other" with no description -- a convenience, not a gate.
  */
 async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: string) {
     if (!GEMINI_API_KEY) return;
+    const { data: row } = await admin.from('mirror_garments')
+        .select('category, description').eq('id', garmentId).maybeSingle();
+    if (!row || (row.category && row.description)) return;
     const res = await fetch(`${GEMINI_BASE}/${CLASSIFY_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -234,10 +245,15 @@ async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: strin
             contents: [{
                 parts: [
                     { inlineData: { mimeType: mime, data: encodeBase64(bytes) } },
-                    { text: `This image shows a clothing item, possibly worn by a model. Which single category is the main product? Answer with exactly one word from: ${CATEGORIES.join(', ')}.` },
+                    { text: [
+                        'This image shows a clothing item, possibly worn by a model. Look only at the main product.',
+                        `Return JSON: {"category": one of ${CATEGORIES.join(', ')}, "description": one sentence of 15 to 30 words}.`,
+                        'The description starts with "a" or "an" and gives colour, material, pattern, cut and fit, and whether it is open or closed, buttoned or zipped.',
+                        'Describe only what is visible. No brand names, no logos or text, nothing about the model or background.',
+                    ].join(' ') },
                 ],
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 5 },
+            generationConfig: { temperature: 0, maxOutputTokens: 200, responseMimeType: 'application/json' },
         }),
     });
     if (!res.ok) {
@@ -245,9 +261,16 @@ async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: strin
         return;
     }
     const data = await res.json();
-    const word = String(data?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim().toLowerCase().replace(/[^a-z]/g, '');
-    const category = (CATEGORIES as readonly string[]).includes(word) ? word : 'other';
-    await admin.from('mirror_garments').update({ category }).eq('id', garmentId);
+    let parsed: any = {};
+    try {
+        parsed = JSON.parse(String(data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}'));
+    } catch { /* falls through to "other" */ }
+    const word = String(parsed?.category || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+    const description = typeof parsed?.description === 'string' ? parsed.description.trim().slice(0, 600) : '';
+    const patch: Record<string, unknown> = {};
+    if (!row.category) patch.category = (CATEGORIES as readonly string[]).includes(word) ? word : 'other';
+    if (!row.description && description) patch.description = description;
+    if (Object.keys(patch).length) await admin.from('mirror_garments').update(patch).eq('id', garmentId);
 }
 
 /** Store a piece's image and record it on the visit. Shared by every way a piece arrives. */
@@ -258,6 +281,7 @@ async function addGarment(session: any, image: { bytes: Uint8Array; mime: string
     category?: Category | null;
     /** For a piece from a store's rack: its row in mirror_store_products. */
     storeProductId?: string | null;
+    description?: string | null;
 }) {
     const id = crypto.randomUUID();
     const path = `sessions/${session.id}/garments/${id}.${image.ext}`;
@@ -273,9 +297,10 @@ async function addGarment(session: any, image: { bytes: Uint8Array; mime: string
         product_url: fields.productUrl || null,
         category: fields.category || null,
         store_product_id: fields.storeProductId || null,
+        description: fields.description ? String(fields.description).slice(0, 600) : null,
     });
     if (error) throw new Error(error.message);
-    if (!fields.category) background(classifyGarment(id, image.bytes, image.mime));
+    if (!fields.category || !fields.description) background(classifyGarment(id, image.bytes, image.mime));
     logEvent(session.device_id, session.id, 'garment_added', {
         source: fields.source,
         host: hostOf(fields.productUrl),
@@ -715,6 +740,7 @@ async function describeSession(session: any) {
             id: g.id,
             source: g.source,
             category: g.category,
+            description: g.description,
             productId: g.store_product_id,
             title: g.title,
             productUrl: g.product_url,
@@ -1085,6 +1111,8 @@ async function handle(req: Request, body: any): Promise<Response> {
             // A credit line for this mirror (the workplace demo), shown with a
             // QR code to the person's profile. Null on every other mirror.
             credit: device.credit ?? null,
+            // Whether this mirror offers Live (the realtime try-on).
+            live: !!DECART_API_KEY,
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
     }
@@ -1253,6 +1281,51 @@ async function handle(req: Request, body: any): Promise<Response> {
         return json({ pressed: !!data?.length });
     }
 
+    // ── Live try-on ───────────────────────────────────────────────────────
+    //
+    // The kiosk streams the camera to Decart directly over WebRTC; this only
+    // hands it a one-minute token for each connect, so the real key never
+    // reaches a screen. Tokens are limited to the try-on model, and to a
+    // dozen connects per visit.
+    if (action === 'live.token') {
+        const device = await requireDevice(req, body);
+        const session = await requireKioskSession(device, body?.sessionId);
+        if (!DECART_API_KEY) throw new HttpError(503, 'Live isn’t set up on this mirror.', 'live_off');
+        const { count } = await admin.from('mirror_events')
+            .select('id', { count: 'exact', head: true })
+            .eq('session_id', session.id).eq('type', 'live_started');
+        if ((count || 0) >= MAX_LIVE_CONNECTS_PER_VISIT) {
+            throw new HttpError(429, 'That’s plenty of live for one visit — take a photo of your favourite.', 'live_limit');
+        }
+        const res = await fetch('https://api.decart.ai/v1/client/tokens', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-api-key': DECART_API_KEY },
+            body: JSON.stringify({
+                expiresIn: 60,
+                allowedModels: DECART_LIVE_MODELS,
+                metadata: { device: device.id, session: session.id },
+            }),
+        });
+        if (!res.ok) {
+            console.error('decart token failed', res.status, (await res.text().catch(() => '')).slice(0, 300));
+            throw new HttpError(502, 'Live isn’t available right now.', 'live_unavailable');
+        }
+        const token = await res.json();
+        await touch(session.id);
+        return json({ apiKey: token.apiKey, expiresAt: token.expiresAt });
+    }
+
+    // Live time, for cost: logged when a live stretch starts and ends.
+    if (action === 'live.log') {
+        const device = await requireDevice(req, body);
+        const session = await requireKioskSession(device, body?.sessionId, { active: false });
+        const phase = body?.phase === 'ended' ? 'ended' : 'started';
+        const seconds = Math.min(3600, Math.max(0, Math.round(Number(body?.seconds) || 0)));
+        logEvent(device.id, session.id, phase === 'ended' ? 'live_ended' : 'live_started', phase === 'ended' ? { seconds } : {});
+        await touch(session.id);
+        return json({ ok: true });
+    }
+
     if (action === 'session.end') {
         const device = await requireDevice(req, body);
         const session = await requireKioskSession(device, body?.sessionId, { active: false });
@@ -1280,7 +1353,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         const rackId = await rackStoreId(await storeOf(device));
         if (!rackId) return json({ items: [] });
         const { data } = await admin.from('mirror_store_products')
-            .select('id, name, brand, price, currency, image_url, category, gender')
+            .select('id, name, brand, price, currency, image_url, category, gender, description')
             .eq('store_id', rackId).eq('is_active', true)
             .order('position')
             .limit(MAX_RACK_ITEMS);
@@ -1294,6 +1367,7 @@ async function handle(req: Request, body: any): Promise<Response> {
                 imageUrl: p.image_url,
                 category: p.category,
                 gender: p.gender,
+                description: p.description,
             })),
         });
     }
@@ -1315,7 +1389,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         }
         // Only this store's own rack, whatever id the screen sends.
         const { data: product } = await admin.from('mirror_store_products')
-            .select('id, name, brand, image_url, product_url, category, is_active')
+            .select('id, name, brand, image_url, product_url, category, is_active, description')
             .eq('id', productId).eq('store_id', rackId).maybeSingle();
         if (!product || !product.is_active) throw new HttpError(404, 'That piece is no longer on the rack');
 
@@ -1337,6 +1411,7 @@ async function handle(req: Request, body: any): Promise<Response> {
             // The catalog's own category, unless it had none to give.
             category: product.category !== 'other' ? product.category : null,
             storeProductId: product.id,
+            description: product.description,
         });
         await touch(session.id);
         return json({ ok: true, garmentId: id });

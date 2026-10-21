@@ -22,7 +22,9 @@ const rows = items.map((item, position) => {
     const file = new URL(`public/rack/${item.gender}/${item.key}.jpg`, root);
     const version = createHash('sha1').update(readFileSync(file)).digest('hex').slice(0, 10);
     const url = `${ORIGIN}/rack/${item.gender}/${item.key}.jpg?v=${version}`;
-    return `(${q(`${item.gender}/${item.key}`)}, ${q(item.name)}, ${q(item.gender)}, ${q(item.category)}, ${q(url)}, ${position})`;
+    // What Live mode dresses people from, along with the photo.
+    const description = (item.describe || item.name).replace(/\s*\(photo supplied by Emode\)\s*$/i, '');
+    return `(${q(`${item.gender}/${item.key}`)}, ${q(item.name)}, ${q(item.gender)}, ${q(item.category)}, ${q(url)}, ${position}, ${q(description)})`;
 });
 
 console.log(`-- Emode house rack: ${items.length} pieces
@@ -31,15 +33,16 @@ select 'Emode', true, '${createHash('sha256').update(randomBytes(32)).digest('he
 where not exists (select 1 from public.mirror_stores where is_house);
 
 insert into public.mirror_store_products
-    (store_id, source, external_id, name, gender, category, image_url, position, is_active, synced_at)
-select h.id, 'house', v.external_id, v.name, v.gender, v.category, v.image_url, v.position, true, now()
+    (store_id, source, external_id, name, gender, category, image_url, position, description, is_active, synced_at)
+select h.id, 'house', v.external_id, v.name, v.gender, v.category, v.image_url, v.position, v.description, true, now()
 from (select id from public.mirror_stores where is_house) h,
 (values
     ${rows.join(',\n    ')}
-) as v(external_id, name, gender, category, image_url, position)
+) as v(external_id, name, gender, category, image_url, position, description)
 on conflict (store_id, external_id) do update
     set name = excluded.name, gender = excluded.gender, category = excluded.category,
-        image_url = excluded.image_url, position = excluded.position, is_active = true, synced_at = excluded.synced_at;
+        image_url = excluded.image_url, position = excluded.position, description = excluded.description,
+        is_active = true, synced_at = excluded.synced_at;
 
 update public.mirror_store_products
    set is_active = false
