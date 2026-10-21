@@ -165,7 +165,7 @@ function touch(sessionId: string) {
 type EventType =
     | 'visit_started' | 'phone_paired' | 'garment_added' | 'look_generated' | 'look_failed'
     | 'visit_ended' | 'product_link_opened' | 'app_cta_tapped' | 'account_linked'
-    | 'wardrobe_sent' | 'look_saved_to_account' | 'live_started' | 'live_ended';
+    | 'wardrobe_sent' | 'look_saved_to_account' | 'live_started' | 'live_ended' | 'live_failed';
 
 /**
  * Count something that happened at a mirror.
@@ -253,7 +253,12 @@ async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: strin
                     ].join(' ') },
                 ],
             }],
-            generationConfig: { temperature: 0, maxOutputTokens: 200, responseMimeType: 'application/json' },
+            // No "thinking": on 2.5 Flash it spends the output budget before
+            // any answer is written, which left every piece as "other".
+            generationConfig: {
+                temperature: 0, maxOutputTokens: 400, responseMimeType: 'application/json',
+                thinkingConfig: { thinkingBudget: 0 },
+            },
         }),
     });
     if (!res.ok) {
@@ -261,10 +266,14 @@ async function classifyGarment(garmentId: string, bytes: Uint8Array, mime: strin
         return;
     }
     const data = await res.json();
+    const text = String((data?.candidates?.[0]?.content?.parts || []).map((p: any) => p?.text || '').join('') || '');
     let parsed: any = {};
     try {
-        parsed = JSON.parse(String(data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}'));
-    } catch { /* falls through to "other" */ }
+        parsed = JSON.parse(text || '{}');
+    } catch {
+        console.warn('classify: unreadable answer', data?.candidates?.[0]?.finishReason, text.slice(0, 200));
+    }
+    if (!parsed?.category) console.warn('classify: no category', data?.candidates?.[0]?.finishReason, text.slice(0, 200));
     const word = String(parsed?.category || '').trim().toLowerCase().replace(/[^a-z]/g, '');
     const description = typeof parsed?.description === 'string' ? parsed.description.trim().slice(0, 600) : '';
     const patch: Record<string, unknown> = {};
@@ -1315,13 +1324,20 @@ async function handle(req: Request, body: any): Promise<Response> {
         return json({ apiKey: token.apiKey, expiresAt: token.expiresAt });
     }
 
-    // Live time, for cost: logged when a live stretch starts and ends.
+    // Live time, for cost, and why Live failed when it did: logged when a
+    // live stretch starts, ends, or fails to start.
     if (action === 'live.log') {
         const device = await requireDevice(req, body);
         const session = await requireKioskSession(device, body?.sessionId, { active: false });
-        const phase = body?.phase === 'ended' ? 'ended' : 'started';
+        const phase = ['ended', 'failed'].includes(body?.phase) ? body.phase : 'started';
         const seconds = Math.min(3600, Math.max(0, Math.round(Number(body?.seconds) || 0)));
-        logEvent(device.id, session.id, phase === 'ended' ? 'live_ended' : 'live_started', phase === 'ended' ? { seconds } : {});
+        const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 160) : null;
+        if (phase === 'failed') {
+            console.warn('live failed on', device.name, reason);
+            logEvent(device.id, session.id, 'live_failed', { reason });
+        } else {
+            logEvent(device.id, session.id, phase === 'ended' ? 'live_ended' : 'live_started', phase === 'ended' ? { seconds } : {});
+        }
         await touch(session.id);
         return json({ ok: true });
     }

@@ -32,6 +32,7 @@ export function Live({
     picks,
     getToken,
     onLog,
+    onUnavailable,
     onPhoto,
     onDone,
 }: {
@@ -41,7 +42,9 @@ export function Live({
     pieces: LivePiece[];
     picks: RackItem[];
     getToken: () => Promise<string>;
-    onLog: (phase: 'started' | 'ended', seconds?: number) => void;
+    onLog: (phase: 'started' | 'ended' | 'failed', seconds?: number, reason?: string) => void;
+    /** Live can't run for now (e.g. the Decart account is out of credits): stop offering it for a while. */
+    onUnavailable?: () => void;
     /** Take a photo of the outfit being worn live. */
     onPhoto: (outfit: LivePiece[]) => void;
     onDone: () => void;
@@ -57,11 +60,14 @@ export function Live({
     const [secondsLeft, setSecondsLeft] = useState(LIVE_SECONDS);
     const [outfit, setOutfit] = useState<LivePiece[]>(pieces);
     const [swapping, setSwapping] = useState(false);
+    const [retryable, setRetryable] = useState(false);
+    // Bumped by "Try again" to run the whole connection again.
+    const [attempt, setAttempt] = useState(0);
 
     // Latest props without restarting the connection when the kiosk re-renders.
-    const props = useRef({ cameraId, rotation, framing, pieces, getToken, onLog });
+    const props = useRef({ cameraId, rotation, framing, pieces, getToken, onLog, onUnavailable });
     useEffect(() => {
-        props.current = { cameraId, rotation, framing, pieces, getToken, onLog };
+        props.current = { cameraId, rotation, framing, pieces, getToken, onLog, onUnavailable };
     });
 
     const stop = useCallback(() => {
@@ -73,19 +79,54 @@ export function Live({
         let cancelled = false;
         let timer: ReturnType<typeof setInterval> | undefined;
         let camera: MediaStream | null = null;
+        let input: MediaStream | null = null;
         let logged = false;
         const p = props.current;
 
-        cleanupRef.current = () => {
-            cancelled = true;
+        // Give everything back: the model session, the camera, the stream we
+        // drew for the model. Also run after a failed start, so a failure
+        // never leaves the camera held for the next try.
+        const release = () => {
             if (timer) clearInterval(timer);
+            timer = undefined;
             rtRef.current?.disconnect();
             rtRef.current = null;
             camera?.getTracks().forEach((t) => t.stop());
+            camera = null;
+            input?.getTracks().forEach((t) => t.stop());
+            input = null;
+        };
+        cleanupRef.current = () => {
+            cancelled = true;
+            release();
             if (logged) {
                 logged = false;
                 p.onLog('ended', Math.round((Date.now() - startedAt.current) / 1000));
             }
+        };
+
+        // What to tell the shopper, and whether trying again could help. The
+        // real reason is logged for us, never shown on a public screen.
+        const explain = (reason: string) => {
+            if (/insufficient credits|credit|quota|payment|billing/i.test(reason)) {
+                p.onUnavailable?.();
+                return { text: 'Live is taking a break right now. You can still take a photo.', retry: false };
+            }
+            if (/limit|plenty/i.test(reason)) return { text: reason, retry: false };
+            if (/camera|NotAllowed|NotFound|NotReadable|video source/i.test(reason)) {
+                return { text: 'The camera isn’t available right now.', retry: true };
+            }
+            return { text: 'Live didn’t connect. Try again, or take a photo instead.', retry: true };
+        };
+        const fail = (reason: string) => {
+            if (cancelled) return;
+            console.warn('live failed', reason);
+            release();
+            p.onLog('failed', undefined, reason.slice(0, 160));
+            const { text, retry } = explain(reason);
+            setMessage(text);
+            setRetryable(retry);
+            setStatus('error');
         };
 
         (async () => {
@@ -97,8 +138,12 @@ export function Live({
                 const outW = Math.min(model.width, model.height);
                 const outH = Math.max(model.width, model.height);
 
-                camera = await openCamera(p.cameraId);
-                if (cancelled) return;
+                const opened = await openCamera(p.cameraId);
+                if (cancelled) {
+                    opened.getTracks().forEach((t) => t.stop());
+                    return;
+                }
+                camera = opened;
                 const cam = camRef.current!;
                 cam.srcObject = camera;
                 await cam.play().catch(() => {});
@@ -110,14 +155,14 @@ export function Live({
                 timer = setInterval(() => {
                     if (cam.videoWidth) drawFramed(ctx, cam, p.rotation, p.framing, outW, outH, false);
                 }, 1000 / fps);
-                const input = canvas.captureStream(fps);
+                input = canvas.captureStream(fps);
 
                 const client = createDecartClient({ apiKeyProvider: p.getToken, telemetry: false });
                 const first = await liveInput(p.pieces);
                 const rt = await client.realtime.connect(input, {
                     model,
                     mirror: false,
-                    retries: 2,
+                    retries: 1,
                     onRemoteStream: (s: MediaStream) => {
                         const out = outRef.current;
                         if (!out) return;
@@ -149,20 +194,24 @@ export function Live({
                 rt.on('error', (e: { message?: string; code?: string }) => {
                     console.warn('live error', e?.code, e?.message);
                     if (e?.code === 'WEB_RTC_ERROR') setMessage('The network here is blocking live video.');
+                    if (/insufficient credits|credit|quota/i.test(e?.message || '')) fail(e?.message || 'credits');
                 });
             } catch (e) {
-                if (cancelled) return;
-                console.warn('live failed to start', e);
-                const text = (e as Error)?.message || '';
-                setMessage(/limit|plenty/i.test(text) ? text
-                    : /camera|NotAllowed|NotFound/i.test(text) ? 'The camera isn’t available right now.'
-                        : 'Live isn’t available right now. You can still take a photo.');
-                setStatus('error');
+                const err = e as { name?: string; message?: string; code?: string };
+                fail([err?.code, err?.name, err?.message].filter(Boolean).join(': ') || String(e));
             }
         })();
 
         return () => cleanupRef.current();
-    }, []);
+    }, [attempt]);
+
+    const retry = () => {
+        stop();
+        setMessage(null);
+        setRetryable(false);
+        setStatus('starting');
+        setAttempt((n) => n + 1);
+    };
 
     // The stretch stops on its own; live is billed by the second.
     useEffect(() => {
@@ -245,7 +294,8 @@ export function Live({
                         <p className="font-display text-[1.6rem] font-semibold">{status === 'ended' ? 'That’s live for now.' : 'Live didn’t start.'}</p>
                         {message && <p className="text-[0.85rem] text-white/70">{message}</p>}
                         <div className="mt-[0.6rem] flex flex-col items-center gap-[0.7rem]">
-                            <KioskButton tone="light" onClick={photo}>Take a photo of it</KioskButton>
+                            {status === 'error' && retryable && <KioskButton tone="light" onClick={retry}>Try again</KioskButton>}
+                            <KioskButton tone={status === 'error' && retryable ? 'ghost-light' : 'light'} onClick={photo}>Take a photo of it</KioskButton>
                             <KioskButton tone="ghost-light" onClick={done}>Back</KioskButton>
                         </div>
                     </div>

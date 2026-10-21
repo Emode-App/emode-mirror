@@ -50,6 +50,7 @@ export function Kiosk() {
     // from -- where "Done" goes back to, with everything still on it.
     const [liveIds, setLiveIds] = useState<string[]>([]);
     const [liveFrom, setLiveFrom] = useState<Stage>({ name: 'pair' });
+    const [liveOffUntil, setLiveOffUntil] = useState(0);
     // The store's rack, when this mirror belongs to a store that has one.
     const [rack, setRack] = useState<RackItem[]>([]);
     const [rackPending, setRackPending] = useState<string | null>(null);
@@ -370,7 +371,9 @@ export function Kiosk() {
         setLiveFrom(stage);
         setStage({ name: 'live' });
     };
-    const onLive = hello?.live && session ? () => goLive(selected) : undefined;
+    // After Live says it can't run (out of credits), stop offering it for a while.
+    const liveOn = !!hello?.live && Date.now() > liveOffUntil;
+    const onLive = liveOn && session ? () => goLive(selected) : undefined;
     const latestLook = [...looks].reverse().find((l) => l.status === 'succeeded' && l.imageUrl);
 
     let screen: React.ReactNode = null;
@@ -448,7 +451,8 @@ export function Kiosk() {
                     }))}
                     picks={rack.slice(0, 30)}
                     getToken={() => call<{ apiKey: string }>({ action: 'live.token', sessionId: session.id }).then((r) => r.apiKey)}
-                    onLog={(phase, seconds) => { call({ action: 'live.log', sessionId: session.id, phase, seconds }).catch(() => {}); }}
+                    onLog={(phase, seconds, reason) => { call({ action: 'live.log', sessionId: session.id, phase, seconds, reason }).catch(() => {}); }}
+                    onUnavailable={() => setLiveOffUntil(Date.now() + 10 * 60_000)}
                     onPhoto={async (outfit) => {
                         lastTouch.current = Date.now();
                         // Rack pieces worn live become pieces of the visit, then the photo.
@@ -519,7 +523,7 @@ export function Kiosk() {
                     onSelectLook={(id) => setStage({ name: 'result', lookId: id })}
                     onChangeOutfit={() => setStage({ name: 'wardrobe' })}
                     onNewPhoto={() => setStage({ name: 'capture' })}
-                    onLive={hello?.live ? () => goLive(look.garmentIds) : undefined}
+                    onLive={liveOn ? () => goLive(look.garmentIds) : undefined}
                     onFinish={() => finish('finish')}
                 />
             ) : null;
