@@ -453,6 +453,35 @@ export function Kiosk() {
                     getToken={() => call<{ apiKey: string }>({ action: 'live.token', sessionId: session.id }).then((r) => r.apiKey)}
                     onLog={(phase, seconds, reason) => { call({ action: 'live.log', sessionId: session.id, phase, seconds, reason }).catch(() => {}); }}
                     onUnavailable={() => setLiveOffUntil(Date.now() + 10 * 60_000)}
+                    onSnap={async (image, outfit) => {
+                        lastTouch.current = Date.now();
+                        // The pieces worn live, as pieces of the visit, so the snap
+                        // goes home with links to them like any look.
+                        const ids = (await Promise.all(outfit.map(async (piece) => {
+                            if (piece.garmentId) return piece.garmentId;
+                            if (!piece.productId) return null;
+                            try {
+                                const r = await call<{ garmentId: string }>({ action: 'garment.from_catalog', sessionId: session.id, productId: piece.productId });
+                                return r.garmentId;
+                            } catch {
+                                return null;
+                            }
+                        }))).filter((id): id is string => !!id);
+                        await call({ action: 'look.snapshot', sessionId: session.id, image, garmentIds: ids });
+                        try {
+                            setState(await call<SessionState>({ action: 'session.state', sessionId: session.id }));
+                        } catch { /* the next poll catches up */ }
+                    }}
+                    remote={{
+                        paired: !!state?.phonePaired,
+                        setOpen: (open) => { call({ action: 'session.camera', sessionId: session.id, open }).catch(() => {}); },
+                        poll: () => call<{ pressed: boolean }>({ action: 'session.shutter', sessionId: session.id }).then((r) => r.pressed),
+                    }}
+                    onShowLooks={() => {
+                        lastTouch.current = Date.now();
+                        if (latestLook) setStage({ name: 'result', lookId: latestLook.id });
+                        else setStage(liveFrom);
+                    }}
                     onPhoto={async (outfit) => {
                         lastTouch.current = Date.now();
                         // Rack pieces worn live become pieces of the visit, then the photo.

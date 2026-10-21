@@ -165,7 +165,7 @@ function touch(sessionId: string) {
 type EventType =
     | 'visit_started' | 'phone_paired' | 'garment_added' | 'look_generated' | 'look_failed'
     | 'visit_ended' | 'product_link_opened' | 'app_cta_tapped' | 'account_linked'
-    | 'wardrobe_sent' | 'look_saved_to_account' | 'live_started' | 'live_ended' | 'live_failed';
+    | 'wardrobe_sent' | 'look_saved_to_account' | 'live_started' | 'live_ended' | 'live_failed' | 'live_snapshot';
 
 /**
  * Count something that happened at a mirror.
@@ -1248,6 +1248,7 @@ async function handle(req: Request, body: any): Promise<Response> {
         const { count } = await admin.from('mirror_looks')
             .select('id', { count: 'exact', head: true })
             .eq('device_id', device.id)
+            .neq('source', 'live')
             .gte('created_at', dayStart.toISOString());
         if ((count || 0) >= device.daily_look_limit) {
             throw new HttpError(429, 'This mirror has reached its limit for today.', 'device_limit');
@@ -1322,6 +1323,46 @@ async function handle(req: Request, body: any): Promise<Response> {
         const token = await res.json();
         await touch(session.id);
         return json({ apiKey: token.apiKey, expiresAt: token.expiresAt });
+    }
+
+    // A picture snapped from Live: a frame of the dressed video, saved as a
+    // look of the visit so it goes home on the phone like any other. No
+    // generation, so it doesn't count toward the daily limit.
+    if (action === 'look.snapshot') {
+        const device = await requireDevice(req, body);
+        const session = await requireKioskSession(device, body?.sessionId);
+        const image = decodeImage(body?.image);
+        const { count } = await admin.from('mirror_looks')
+            .select('id', { count: 'exact', head: true }).eq('session_id', session.id);
+        if ((count || 0) >= MAX_LOOKS_PER_SESSION) {
+            throw new HttpError(429, 'That is the limit for one visit. Finish and start again to keep going.', 'session_limit');
+        }
+        // Only pieces of this visit, whatever the screen sends.
+        const asked = (Array.isArray(body?.garmentIds) ? body.garmentIds : [])
+            .filter((id: unknown) => typeof id === 'string' && UUID.test(id)).slice(0, MAX_GARMENTS_PER_LOOK);
+        const { data: owned } = asked.length
+            ? await admin.from('mirror_garments').select('id').eq('session_id', session.id).in('id', asked)
+            : { data: [] as any[] };
+        const garmentIds = asked.filter((id: string) => (owned || []).some((g: any) => g.id === id));
+
+        const lookId = crypto.randomUUID();
+        const path = `sessions/${session.id}/looks/${lookId}.${image.ext}`;
+        const { error: upError } = await admin.storage.from(BUCKET).upload(path, image.bytes, { contentType: image.mime });
+        if (upError) throw new Error(upError.message);
+        const { error } = await admin.from('mirror_looks').insert({
+            id: lookId,
+            session_id: session.id,
+            device_id: device.id,
+            garment_ids: garmentIds,
+            status: 'succeeded',
+            image_path: path,
+            completed_at: new Date().toISOString(),
+            source: 'live',
+        });
+        if (error) throw new Error(error.message);
+        logEvent(device.id, session.id, 'live_snapshot', { pieces: garmentIds.length });
+        await touch(session.id);
+        return json({ ok: true, lookId });
     }
 
     // Live time, for cost, and why Live failed when it did: logged when a

@@ -5,7 +5,12 @@ import { drawFramed, openCamera, type Framing } from '@/lib/camera';
 import { liveInput, LIVE_MODEL, LIVE_SECONDS, wearPiece, type LivePiece } from '@/lib/live';
 import type { RackItem } from '@/lib/api';
 import type { Rotation } from '@/lib/settings';
+import type { RemoteShutter } from './Capture';
 import { KioskButton } from './ui';
+
+// A snap counts down so the shopper can lower the phone (or step back from
+// the screen) and strike a pose.
+const SNAP_COUNTDOWN = 3;
 
 type Status = 'starting' | 'live' | 'ended' | 'error';
 
@@ -21,8 +26,9 @@ const pieceFromPick = (item: RackItem): LivePiece => ({
  * Decart over WebRTC; the dressed video that comes back is mirrored on screen
  * like a mirror. Quick picks swap a piece of the outfit without reconnecting
  * (new shoes replace the shoes; a suit replaces top and trousers). Each live
- * stretch stops by itself after LIVE_SECONDS -- live costs by the second --
- * and "Take a photo" hands over to the still-photo flow for a sharp keeper.
+ * stretch stops by itself after LIVE_SECONDS -- live costs by the second.
+ * "Snap it" (on the screen, or "Take my photo" on the paired phone) saves the
+ * dressed frame as a look; "HD photo" hands over to the still-photo flow.
  */
 export function Live({
     cameraId,
@@ -33,6 +39,9 @@ export function Live({
     getToken,
     onLog,
     onUnavailable,
+    onSnap,
+    remote,
+    onShowLooks,
     onPhoto,
     onDone,
 }: {
@@ -45,7 +54,12 @@ export function Live({
     onLog: (phase: 'started' | 'ended' | 'failed', seconds?: number, reason?: string) => void;
     /** Live can't run for now (e.g. the Decart account is out of credits): stop offering it for a while. */
     onUnavailable?: () => void;
-    /** Take a photo of the outfit being worn live. */
+    /** Save a frame of the live, dressed video as a look of the visit. */
+    onSnap: (image: string, outfit: LivePiece[]) => Promise<void>;
+    /** The phone that scanned the code, as a second snap button. */
+    remote?: RemoteShutter;
+    onShowLooks?: () => void;
+    /** Take an HD photo (the still-photo flow) of the outfit being worn live. */
     onPhoto: (outfit: LivePiece[]) => void;
     onDone: () => void;
 }) {
@@ -63,6 +77,16 @@ export function Live({
     const [retryable, setRetryable] = useState(false);
     // Bumped by "Try again" to run the whole connection again.
     const [attempt, setAttempt] = useState(0);
+    // Snapping: the countdown, how many were saved, the flash, a short note.
+    const [countdown, setCountdown] = useState<number | null>(null);
+    const [snaps, setSnaps] = useState(0);
+    const [flash, setFlash] = useState(0);
+    const [note, setNote] = useState<string | null>(null);
+    const counting = useRef(false);
+    const latest = useRef({ outfit, onSnap, remote });
+    useEffect(() => {
+        latest.current = { outfit, onSnap, remote };
+    });
 
     // Latest props without restarting the connection when the kiosk re-renders.
     const props = useRef({ cameraId, rotation, framing, pieces, getToken, onLog, onUnavailable });
@@ -219,7 +243,8 @@ export function Live({
         const id = setInterval(() => {
             const left = LIVE_SECONDS - Math.floor((Date.now() - startedAt.current) / 1000);
             setSecondsLeft(Math.max(0, left));
-            if (left <= 0) {
+            // A snap already counting down gets to finish.
+            if (left <= 0 && !counting.current) {
                 stop();
                 setStatus('ended');
             }
@@ -244,9 +269,72 @@ export function Live({
     const wear = (item: RackItem) => dress(wearPiece(outfit, pieceFromPick(item)));
     const original = outfit.length === pieces.length && outfit.every((o) => pieces.some((p) => p.key === o.key));
 
+    // The frame as it was on screen (mirrored), at the model's full size.
+    const grab = useCallback(() => {
+        const out = outRef.current;
+        if (!out || !out.videoWidth) return null;
+        const c = document.createElement('canvas');
+        c.width = out.videoWidth;
+        c.height = out.videoHeight;
+        const ctx = c.getContext('2d')!;
+        ctx.translate(c.width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(out, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', 0.9);
+    }, []);
+
+    const snap = useCallback(() => {
+        if (counting.current) return;
+        counting.current = true;
+        setCountdown(SNAP_COUNTDOWN);
+    }, []);
+
+    useEffect(() => {
+        if (countdown === null) return;
+        if (countdown > 0) {
+            const t = setTimeout(() => setCountdown((c) => (c ?? 1) - 1), 1000);
+            return () => clearTimeout(t);
+        }
+        const image = grab();
+        counting.current = false;
+        setCountdown(null);
+        if (!image) return;
+        setFlash((n) => n + 1);
+        setSnaps((n) => n + 1);
+        setNote('Saved to your looks');
+        latest.current.onSnap(image, latest.current.outfit).catch(() => setNote('That one didn’t save — try again.'));
+    }, [countdown, grab]);
+
+    useEffect(() => {
+        if (!note) return;
+        const t = setTimeout(() => setNote(null), 2500);
+        return () => clearTimeout(t);
+    }, [note]);
+
+    // While live, the paired phone shows "Take my photo"; a press snaps.
+    const paired = !!remote?.paired;
+    useEffect(() => {
+        if (!paired || status !== 'live') return;
+        latest.current.remote?.setOpen(true);
+        let stopped = false;
+        const id = setInterval(async () => {
+            const pressed = await (latest.current.remote?.poll() ?? Promise.resolve(false)).catch(() => false);
+            if (pressed && !stopped) snap();
+        }, 1000);
+        return () => {
+            stopped = true;
+            clearInterval(id);
+            latest.current.remote?.setOpen(false);
+        };
+    }, [paired, status, snap]);
+
     const photo = () => {
         stop();
         onPhoto(outfit);
+    };
+    const looks = () => {
+        stop();
+        onShowLooks?.();
     };
     const done = () => {
         stop();
@@ -277,6 +365,22 @@ export function Live({
                 </span>
             </div>
 
+            {countdown !== null && countdown > 0 && (
+                <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                    <span key={countdown} className="font-display text-[11rem] font-bold text-white drop-shadow-[0_0.3rem_2rem_rgba(0,0,0,0.6)]" style={{ animation: 'mirror-count 1s ease-out both' }}>
+                        {countdown}
+                    </span>
+                </div>
+            )}
+            {flash > 0 && (
+                <div key={flash} className="pointer-events-none absolute inset-0 bg-white" style={{ animation: 'mirror-flash 0.5s ease-out forwards' }} />
+            )}
+            {note && (
+                <div className="pointer-events-none absolute inset-x-0 top-[6rem] flex justify-center">
+                    <span className="rounded-full bg-white/90 px-[1.2rem] py-[0.5rem] text-[0.8rem] font-semibold text-obsidian animate-rise">{note}</span>
+                </div>
+            )}
+
             {status === 'starting' && (
                 <div className="absolute inset-0 grid place-items-center px-[4rem] text-center text-white">
                     <div>
@@ -293,9 +397,11 @@ export function Live({
                     <div className="flex flex-col items-center gap-[1rem]">
                         <p className="font-display text-[1.6rem] font-semibold">{status === 'ended' ? 'That’s live for now.' : 'Live didn’t start.'}</p>
                         {message && <p className="text-[0.85rem] text-white/70">{message}</p>}
+                        {snaps > 0 && <p className="text-[0.85rem] text-white/70">{snaps === 1 ? 'Your snap is' : `Your ${snaps} snaps are`} in your looks.</p>}
                         <div className="mt-[0.6rem] flex flex-col items-center gap-[0.7rem]">
                             {status === 'error' && retryable && <KioskButton tone="light" onClick={retry}>Try again</KioskButton>}
-                            <KioskButton tone={status === 'error' && retryable ? 'ghost-light' : 'light'} onClick={photo}>Take a photo of it</KioskButton>
+                            {snaps > 0 && onShowLooks && <KioskButton tone="light" onClick={looks}>See my looks</KioskButton>}
+                            <KioskButton tone={(status === 'error' && retryable) || snaps > 0 ? 'ghost-light' : 'light'} onClick={photo}>HD photo of it</KioskButton>
                             <KioskButton tone="ghost-light" onClick={done}>Back</KioskButton>
                         </div>
                     </div>
@@ -324,9 +430,15 @@ export function Live({
                         })}
                     </div>
                     <div className="mt-[1rem] flex justify-center gap-[0.6rem]">
-                        <KioskButton tone="light" className="min-w-[13rem]" onClick={photo}>Take a photo</KioskButton>
-                        <KioskButton tone="ghost-light" className="min-w-[8rem]" onClick={done}>Done</KioskButton>
+                        <KioskButton tone="light" className="min-w-[11rem]" disabled={countdown !== null} onClick={snap}>Snap it</KioskButton>
+                        <KioskButton tone="ghost-light" className="min-w-[9rem]" onClick={photo}>HD photo</KioskButton>
+                        <KioskButton tone="ghost-light" className="min-w-[7rem]" onClick={done}>Done</KioskButton>
                     </div>
+                    {paired && (
+                        <p className="mt-[0.7rem] text-center text-[0.72rem] text-white/70">
+                            Standing back? Tap <span className="font-semibold text-white">Take my photo</span> on your phone to snap.
+                        </p>
+                    )}
                 </div>
             )}
         </div>
