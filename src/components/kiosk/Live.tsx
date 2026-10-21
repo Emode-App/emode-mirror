@@ -2,22 +2,25 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { drawFramed, openCamera, type Framing } from '@/lib/camera';
-import { liveOutfit, LIVE_MODEL, LIVE_SECONDS, type LivePiece } from '@/lib/live';
+import { liveInput, LIVE_MODEL, LIVE_SECONDS, wearPiece, type LivePiece } from '@/lib/live';
 import type { RackItem } from '@/lib/api';
 import type { Rotation } from '@/lib/settings';
 import { KioskButton } from './ui';
 
 type Status = 'starting' | 'live' | 'ended' | 'error';
 
-/** What the shopper is wearing live: their outfit, or one quick pick. */
-type Wearing = { kind: 'outfit' } | { kind: 'pick'; item: RackItem };
+const pieceFromPick = (item: RackItem): LivePiece => ({
+    key: `p:${item.id}`, productId: item.id, name: item.name,
+    description: item.description ?? null, category: item.category, imageUrl: item.imageUrl,
+});
 
 /**
  * Live try-on: the shopper, dressed, in real time.
  *
  * The camera is cropped to this mirror's framing and sent, unmirrored, to
  * Decart over WebRTC; the dressed video that comes back is mirrored on screen
- * like a mirror. Quick picks swap the garment without reconnecting. Each live
+ * like a mirror. Quick picks swap a piece of the outfit without reconnecting
+ * (new shoes replace the shoes; a suit replaces top and trousers). Each live
  * stretch stops by itself after LIVE_SECONDS -- live costs by the second --
  * and "Take a photo" hands over to the still-photo flow for a sharp keeper.
  */
@@ -39,19 +42,20 @@ export function Live({
     picks: RackItem[];
     getToken: () => Promise<string>;
     onLog: (phase: 'started' | 'ended', seconds?: number) => void;
-    onPhoto: (pick: RackItem | null) => void;
+    /** Take a photo of the outfit being worn live. */
+    onPhoto: (outfit: LivePiece[]) => void;
     onDone: () => void;
 }) {
     const camRef = useRef<HTMLVideoElement>(null);
     const outRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const rtRef = useRef<{ set: (i: { prompt?: string; image?: string | null; enhance?: boolean }) => Promise<void>; disconnect: () => void } | null>(null);
+    const rtRef = useRef<{ set: (i: { prompt?: string; image?: Blob | string | null; enhance?: boolean }) => Promise<void>; disconnect: () => void } | null>(null);
     const cleanupRef = useRef<() => void>(() => {});
     const startedAt = useRef(0);
     const [status, setStatus] = useState<Status>('starting');
     const [message, setMessage] = useState<string | null>(null);
     const [secondsLeft, setSecondsLeft] = useState(LIVE_SECONDS);
-    const [wearing, setWearing] = useState<Wearing>({ kind: 'outfit' });
+    const [outfit, setOutfit] = useState<LivePiece[]>(pieces);
     const [swapping, setSwapping] = useState(false);
 
     // Latest props without restarting the connection when the kiosk re-renders.
@@ -109,7 +113,7 @@ export function Live({
                 const input = canvas.captureStream(fps);
 
                 const client = createDecartClient({ apiKeyProvider: p.getToken, telemetry: false });
-                const outfit = liveOutfit(p.pieces);
+                const first = await liveInput(p.pieces);
                 const rt = await client.realtime.connect(input, {
                     model,
                     mirror: false,
@@ -121,8 +125,8 @@ export function Live({
                         out.play().catch(() => {});
                     },
                     initialState: {
-                        prompt: { text: outfit.prompt, enhance: false },
-                        ...(outfit.image ? { image: outfit.image } : {}),
+                        prompt: { text: first.prompt, enhance: false },
+                        ...(first.image ? { image: first.image } : {}),
                     },
                 });
                 if (cancelled) {
@@ -174,27 +178,26 @@ export function Live({
         return () => clearInterval(id);
     }, [status, stop]);
 
-    const wear = async (next: Wearing) => {
+    const dress = async (next: LivePiece[]) => {
         const rt = rtRef.current;
         if (!rt || swapping) return;
         setSwapping(true);
-        setWearing(next);
-        const outfit = next.kind === 'outfit'
-            ? liveOutfit(pieces)
-            : liveOutfit([{ name: next.item.name, description: next.item.description ?? null, category: next.item.category, imageUrl: next.item.imageUrl }]);
+        setOutfit(next);
         try {
-            await rt.set({ prompt: outfit.prompt, image: outfit.image, enhance: false });
+            const input = await liveInput(next);
+            await rt.set({ prompt: input.prompt, image: input.image, enhance: false });
         } catch (e) {
             console.warn('live swap failed', e);
         } finally {
             setSwapping(false);
         }
     };
+    const wear = (item: RackItem) => dress(wearPiece(outfit, pieceFromPick(item)));
+    const original = outfit.length === pieces.length && outfit.every((o) => pieces.some((p) => p.key === o.key));
 
     const photo = () => {
-        const pick = wearing.kind === 'pick' ? wearing.item : null;
         stop();
-        onPhoto(pick);
+        onPhoto(outfit);
     };
     const done = () => {
         stop();
@@ -220,8 +223,8 @@ export function Live({
                     <span className="font-display text-[0.9rem] font-semibold uppercase tracking-[0.25em]">Live</span>
                     {status === 'live' && <span className="text-[0.85rem] text-white/70">{mm}</span>}
                 </div>
-                <span className="max-w-[20rem] truncate text-right text-[0.8rem] text-white/80">
-                    {wearing.kind === 'pick' ? wearing.item.name : 'Your outfit'}
+                <span className="max-w-[22rem] text-right text-[0.8rem] leading-[1.35] text-white/80">
+                    {outfit.map((o) => o.name || 'Your piece').join(' + ')}
                 </span>
             </div>
 
@@ -253,15 +256,15 @@ export function Live({
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent px-[2rem] pb-[3.4rem] pt-[5rem]">
                     {message && <p className="mb-[0.8rem] text-center text-[0.75rem] text-white/80">{message}</p>}
                     <div className="flex gap-[0.5rem] overflow-x-auto pb-[0.4rem] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                        <button type="button" onClick={() => wear({ kind: 'outfit' })} disabled={swapping}
+                        <button type="button" onClick={() => dress(pieces)} disabled={swapping || original}
                             className={`grid w-[4.6rem] shrink-0 place-items-center rounded-[0.6rem] border-[0.08rem] text-center text-[0.55rem] font-semibold uppercase tracking-[0.12em] text-white
-                                ${wearing.kind === 'outfit' ? 'border-gold bg-white/15' : 'border-white/30'}`}>
-                            Your outfit
+                                ${original ? 'border-gold bg-white/15' : 'border-white/30'}`}>
+                            {original ? 'Your outfit' : 'Back to your outfit'}
                         </button>
                         {picks.map((item) => {
-                            const on = wearing.kind === 'pick' && wearing.item.id === item.id;
+                            const on = outfit.some((o) => o.key === `p:${item.id}` || (o.productId === item.id));
                             return (
-                                <button key={item.id} type="button" onClick={() => wear({ kind: 'pick', item })} disabled={swapping}
+                                <button key={item.id} type="button" onClick={() => wear(item)} disabled={swapping}
                                     aria-label={item.name}
                                     className={`relative aspect-[3/4] w-[4.6rem] shrink-0 overflow-hidden rounded-[0.6rem] bg-white ${on ? 'ring-[0.16rem] ring-gold' : ''}`}>
                                     {/* eslint-disable-next-line @next/next/no-img-element */}

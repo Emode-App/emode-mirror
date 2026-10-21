@@ -46,8 +46,10 @@ export function Kiosk() {
     const [error, setError] = useState<string | null>(null);
     const [idleLeft, setIdleLeft] = useState<number | null>(null);
     const [ending, setEnding] = useState<{ phoneUrl: string | null; retainUntil: string | null } | null>(null);
-    // The pieces a Live stretch started from.
+    // The pieces a Live stretch started from, and the screen it was opened
+    // from -- where "Done" goes back to, with everything still on it.
     const [liveIds, setLiveIds] = useState<string[]>([]);
+    const [liveFrom, setLiveFrom] = useState<Stage>({ name: 'pair' });
     // The store's rack, when this mirror belongs to a store that has one.
     const [rack, setRack] = useState<RackItem[]>([]);
     const [rackPending, setRackPending] = useState<string | null>(null);
@@ -365,6 +367,7 @@ export function Kiosk() {
     const goLive = (ids: string[]) => {
         if (!ids.length) return;
         setLiveIds(ids);
+        setLiveFrom(stage);
         setStage({ name: 'live' });
     };
     const onLive = hello?.live && session ? () => goLive(selected) : undefined;
@@ -440,30 +443,37 @@ export function Kiosk() {
                     rotation={camera.rotation}
                     framing={hello?.framing ?? null}
                     pieces={piecesFor(liveIds).map((g): LivePiece => ({
+                        key: g.id, garmentId: g.id, productId: g.productId ?? undefined,
                         name: g.title, description: g.description, category: g.category, imageUrl: g.imageUrl,
                     }))}
                     picks={rack.slice(0, 30)}
                     getToken={() => call<{ apiKey: string }>({ action: 'live.token', sessionId: session.id }).then((r) => r.apiKey)}
                     onLog={(phase, seconds) => { call({ action: 'live.log', sessionId: session.id, phase, seconds }).catch(() => {}); }}
-                    onPhoto={async (pick) => {
+                    onPhoto={async (outfit) => {
                         lastTouch.current = Date.now();
-                        if (pick) {
-                            // A quick pick worn live becomes a piece of the visit, then the photo.
-                            try {
-                                const r = await call<{ garmentId: string }>({ action: 'garment.from_catalog', sessionId: session.id, productId: pick.id });
-                                setSelected([r.garmentId]);
-                                setState(await call<SessionState>({ action: 'session.state', sessionId: session.id }));
-                            } catch (e) {
-                                setError((e as Error).message);
+                        // Rack pieces worn live become pieces of the visit, then the photo.
+                        const ids: string[] = [];
+                        for (const piece of outfit) {
+                            if (piece.garmentId) {
+                                ids.push(piece.garmentId);
+                            } else if (piece.productId) {
+                                try {
+                                    const r = await call<{ garmentId: string }>({ action: 'garment.from_catalog', sessionId: session.id, productId: piece.productId });
+                                    ids.push(r.garmentId);
+                                } catch (e) {
+                                    setError((e as Error).message);
+                                }
                             }
-                        } else {
-                            setSelected(liveIds.slice(0, maxPieces));
                         }
+                        setSelected(ids.slice(0, maxPieces));
+                        try {
+                            setState(await call<SessionState>({ action: 'session.state', sessionId: session.id }));
+                        } catch { /* the regular poll catches up */ }
                         setStage({ name: 'capture' });
                     }}
                     onDone={() => {
                         lastTouch.current = Date.now();
-                        setStage({ name: 'wardrobe' });
+                        setStage(liveFrom);
                     }}
                 />
             );
