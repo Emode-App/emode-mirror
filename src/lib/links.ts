@@ -4,6 +4,11 @@
 export const EMODE_APP_URL = process.env.NEXT_PUBLIC_EMODE_APP_URL
     ?? 'https://testflight.apple.com/join/MsphXM51';
 
+// Where a retailer standing at one of Emode's own mirrors is sent: the
+// website's Shopify / B2B section.
+export const RETAILERS_URL = process.env.NEXT_PUBLIC_RETAILERS_URL
+    ?? 'https://www.emode.style/#extensions';
+
 /**
  * Hand this visit to the Emode app, already signed in, to send pieces from the
  * wardrobe. Uses the app's own scheme, which every installed build understands;

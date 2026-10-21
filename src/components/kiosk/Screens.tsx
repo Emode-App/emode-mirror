@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { formatPrice, type Category, type Garment, type Look, type RackItem, type StoreInfo } from '@/lib/api';
+import { formatPrice, type Category, type Garment, type Look, type MirrorCredit, type RackItem, type StoreInfo } from '@/lib/api';
 import { Qr } from '@/components/Qr';
 import { Wordmark } from '@/components/Wordmark';
 import { Bloom, Eyebrow, KioskButton, Title } from './ui';
@@ -62,6 +62,51 @@ export function Unregistered({ message }: { message: string }) {
     );
 }
 
+/** What a mirror offers to scan besides the visit itself. */
+export interface ShareInfo {
+    appUrl: string;
+    /** Only on Emode's own mirrors -- a store's shoppers aren't retailers. */
+    retailersUrl: string | null;
+    credit: MirrorCredit | null;
+}
+
+/**
+ * Codes to scan from the mirror: the Emode app (the beta, for now), Emode for
+ * retailers, and a credit line where a mirror has one. Large on the start
+ * screen; a compact row on the result screen, where the look is the point.
+ */
+function ShareCodes({ appUrl, retailersUrl, credit, size, className = '' }: ShareInfo & { size: 'lg' | 'sm'; className?: string }) {
+    const lg = size === 'lg';
+    const beta = /testflight\.apple\.com/i.test(appUrl);
+    const codes = [
+        { url: appUrl, label: beta ? 'Join the beta' : 'Get the app', hint: 'Try on anything, anywhere' },
+        ...(retailersUrl ? [{ url: retailersUrl, label: 'For retailers', hint: 'Emode for your store' }] : []),
+    ];
+    return (
+        <div className={`flex items-center justify-center ${lg ? 'flex-col gap-[1.6rem]' : 'gap-[1.6rem]'} ${className}`}>
+            <div className={`flex items-start justify-center ${lg ? 'gap-[2.6rem]' : 'gap-[1.2rem]'}`}>
+                {codes.map((c) => (
+                    <div key={c.label} className="flex flex-col items-center gap-[0.45rem]">
+                        <Qr value={c.url} className={lg ? 'w-[5.6rem] p-[0.35rem]' : 'w-[3.6rem] p-[0.22rem]'} />
+                        <span className={`font-display font-semibold uppercase tracking-[0.18em] ${lg ? 'text-[0.62rem]' : 'text-[0.48rem]'}`}>{c.label}</span>
+                        {lg && <span className="text-[0.55rem] text-faint">{c.hint}</span>}
+                    </div>
+                ))}
+            </div>
+            {credit && (
+                <div className="flex items-center gap-[0.7rem] text-left">
+                    {credit.url && <Qr value={credit.url} className={lg ? 'w-[3.6rem] p-[0.22rem]' : 'w-[3rem] p-[0.18rem]'} />}
+                    <div className={lg ? 'max-w-[20rem] text-[0.62rem] leading-[1.45]' : 'max-w-[12rem] text-[0.5rem] leading-[1.4]'}>
+                        <p className="text-muted">Courtesy of <span className="font-semibold text-fg">{credit.name}</span></p>
+                        {credit.title && <p className="text-faint">{credit.title}</p>}
+                        {credit.url && /linkedin\./i.test(credit.url) && <p className="text-faint">Scan to connect on LinkedIn</p>}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /** "at Store", under the Emode wordmark: Emode's mirror, in their store. */
 function StoreLine({ store, className = '' }: { store: StoreInfo; className?: string }) {
     return (
@@ -76,11 +121,11 @@ function StoreLine({ store, className = '' }: { store: StoreInfo; className?: st
     );
 }
 
-export function Attract({ location, store, rackAvailable, onStart }: { location: string | null; store: StoreInfo | null; rackAvailable: boolean; onStart: () => void }) {
+export function Attract({ location, store, rackAvailable, share, onStart }: { location: string | null; store: StoreInfo | null; rackAvailable: boolean; share: ShareInfo; onStart: () => void }) {
     return (
         <button type="button" onClick={onStart} className="relative flex h-full w-full flex-col items-center text-center">
             <Bloom className="top-[42%]" />
-            <Wordmark className="relative mt-[7rem] text-[3.6rem]" />
+            <Wordmark className="relative mt-[6rem] text-[3.6rem]" />
             {store && <StoreLine store={store} className="relative mt-[1.6rem]" />}
 
             <div className="relative mt-auto flex flex-col items-center gap-[1.2rem] px-[3rem]">
@@ -95,14 +140,16 @@ export function Attract({ location, store, rackAvailable, onStart }: { location:
                 </p>
             </div>
 
-            <div className="relative mb-[9rem] mt-[5rem] flex flex-col items-center gap-[0.8rem]">
+            <div className="relative mt-[3.6rem] flex flex-col items-center gap-[0.8rem]">
                 <span className="grid h-[4.2rem] w-[4.2rem] place-items-center rounded-full border-[0.08rem] border-line animate-soft-pulse">
                     <span className="h-[1.1rem] w-[1.1rem] rounded-full bg-gold" />
                 </span>
                 <span className="font-display text-[1.05rem] font-medium tracking-[0.02em]">Touch to begin</span>
             </div>
 
-            {location && <span className="absolute bottom-[2.4rem] text-[0.6rem] uppercase tracking-[0.3em] text-faint">{location}</span>}
+            <ShareCodes {...share} size="lg" className="relative mb-[4.4rem] mt-[3.6rem]" />
+
+            {location && <span className="absolute bottom-[1.6rem] text-[0.55rem] uppercase tracking-[0.3em] text-faint">{location}</span>}
         </button>
     );
 }
@@ -624,6 +671,7 @@ export function Result({
     looks,
     pieces,
     onSelectLook,
+    share,
     onChangeOutfit,
     onNewPhoto,
     onFinish,
@@ -631,6 +679,7 @@ export function Result({
     look: Look;
     looks: Look[];
     pieces: Garment[];
+    share: ShareInfo;
     onSelectLook: (id: string) => void;
     onChangeOutfit: () => void;
     onNewPhoto: () => void;
@@ -654,7 +703,7 @@ export function Result({
                 </div>
             </div>
 
-            <div className="relative bg-gradient-to-t from-[var(--bg)] via-[var(--bg)] to-transparent px-[2.6rem] pb-[4.5rem] pt-[2rem]">
+            <div className="relative bg-gradient-to-t from-[var(--bg)] via-[var(--bg)] to-transparent px-[2.6rem] pb-[2.4rem] pt-[2rem]">
                 {done.length > 1 && (
                     <div className="mb-[1.2rem] flex justify-center gap-[0.5rem]">
                         {done.map((l) => (
@@ -681,6 +730,8 @@ export function Result({
                     <KioskButton onClick={onFinish}>Finish</KioskButton>
                     <p className="text-[0.7rem] text-faint">When you finish, scan the code to take your looks home.</p>
                 </div>
+
+                <ShareCodes {...share} size="sm" className="mt-[1.6rem]" />
             </div>
         </div>
     );

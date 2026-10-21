@@ -5,7 +5,7 @@ import { mirrorCall, MirrorError, type DeviceHello, type RackItem, type SessionS
 import { readLaunchParams, settings, type LaunchParams } from '@/lib/settings';
 import { Capture } from './Capture';
 import { Attract, Consent, Ending, Generating, Pair, Result, StillThere, Unregistered, Visitor, Wardrobe } from './Screens';
-import { EMODE_APP_URL } from '@/lib/links';
+import { EMODE_APP_URL, RETAILERS_URL } from '@/lib/links';
 
 type Stage =
     | { name: 'boot' }
@@ -165,6 +165,9 @@ export function Kiosk() {
     // The rack is read fresh for each visit, so pieces the store adds or sells
     // out of show up without restarting the screen.
     const hasRack = !!(hello?.rack?.available ?? hello?.store?.hasRack);
+    // What the start and result screens offer to scan: the app, Emode for
+    // retailers (only on Emode's own mirrors), and this mirror's credit line.
+    const share = { appUrl: EMODE_APP_URL, retailersUrl: hello?.store ? null : RETAILERS_URL, credit: hello?.credit ?? null };
     useEffect(() => {
         if (!session || !hasRack) return;
         call<{ items: RackItem[] }>({ action: 'catalog.list' })
@@ -366,7 +369,7 @@ export function Kiosk() {
             screen = <Unregistered message={stage.message} />;
             break;
         case 'attract':
-            screen = <Attract location={hello?.device.location ?? null} store={hello?.store ?? null} rackAvailable={hasRack} onStart={() => setStage({ name: 'consent' })} />;
+            screen = <Attract location={hello?.device.location ?? null} store={hello?.store ?? null} rackAvailable={hasRack} share={share} onStart={() => setStage({ name: 'consent' })} />;
             break;
         case 'consent':
             screen = <Consent busy={busy} onAccept={accept} onDecline={reset} />;
@@ -452,6 +455,7 @@ export function Kiosk() {
                     look={look}
                     looks={looks}
                     pieces={piecesFor(look.garmentIds)}
+                    share={share}
                     onSelectLook={(id) => setStage({ name: 'result', lookId: id })}
                     onChangeOutfit={() => setStage({ name: 'wardrobe' })}
                     onNewPhoto={() => setStage({ name: 'capture' })}
@@ -471,7 +475,7 @@ export function Kiosk() {
             <div className="relative overflow-hidden" style={{ width: 'min(100vw, 56.25vh)', height: 'min(100vh, 177.78vw)' }}>
                 {screen}
 
-                {error && stage.name !== 'wardrobe' && (
+                {error && stage.name !== 'wardrobe' && stage.name !== 'pair' && (
                     <div className="absolute inset-x-[2.6rem] top-[2.4rem] z-40 rounded-[0.7rem] bg-surface-strong px-[1.2rem] py-[0.9rem] text-center text-[0.9rem] animate-rise">
                         {error}
                     </div>

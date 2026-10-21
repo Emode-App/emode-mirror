@@ -64,6 +64,12 @@ export interface StoreInfo {
     hasRack: boolean;
 }
 
+export interface MirrorCredit {
+    name: string;
+    title: string | null;
+    url: string | null;
+}
+
 export interface DeviceHello {
     device: { name: string; location: string | null; theme: Theme };
     /** The store this mirror belongs to, if any. Null for Emode's own mirrors. */
@@ -72,6 +78,8 @@ export interface DeviceHello {
     rack: { available: boolean; house: boolean };
     /** How far the photo zooms in for this mirror's camera, set at /calibrate. */
     framing: Framing | null;
+    /** A credit line for this mirror (the workplace demo), with a link to the person's profile. */
+    credit: MirrorCredit | null;
     limits: { garmentsPerLook: number; idleMinutes: number; retainMinutes: number };
 }
 

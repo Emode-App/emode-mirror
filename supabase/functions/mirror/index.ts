@@ -627,7 +627,7 @@ async function requireDevice(req: Request, body: any) {
     if (key.length < 20) throw new HttpError(401, 'This screen is not registered as an Emode Mirror', 'no_device');
 
     const { data: device } = await admin.from('mirror_devices')
-        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind, store_id, framing')
+        .select('id, name, location, proto_serial, theme, daily_look_limit, active, kind, store_id, framing, credit')
         .eq('key_hash', await sha256Hex(key))
         .maybeSingle();
     if (!device || !device.active) {
@@ -1082,6 +1082,9 @@ async function handle(req: Request, body: any): Promise<Response> {
             // What can be tried on without a phone: the store's rack, or Emode's.
             rack: { available: rackSize > 0, house: rackSize > 0 && !ownRack },
             framing: device.framing ?? null,
+            // A credit line for this mirror (the workplace demo), shown with a
+            // QR code to the person's profile. Null on every other mirror.
+            credit: device.credit ?? null,
             limits: { garmentsPerLook: MAX_GARMENTS_PER_LOOK, idleMinutes: IDLE_MINUTES, retainMinutes: RETAIN_AFTER_END_MINUTES },
         });
     }
