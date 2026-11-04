@@ -37,8 +37,8 @@ function Preview() {
         : <Attract location="Workplace pilot" store={null} rackAvailable share={share} onStart={() => {}} />;
 
     return (
-        <div data-theme="dark" className="fixed inset-0 grid place-items-center bg-bg text-fg">
-            <div className="relative overflow-hidden" style={{ width: 'min(100vw, 56.25vh)', height: 'min(100vh, 177.78vw)' }}>
+        <div data-theme="dark" className="kiosk-stage fixed inset-0 grid place-items-center bg-bg text-fg">
+            <div className="kiosk-frame relative overflow-hidden">
                 {screen}
             </div>
         </div>

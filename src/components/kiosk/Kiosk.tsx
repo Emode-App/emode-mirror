@@ -564,9 +564,9 @@ export function Kiosk() {
     }
 
     return (
-        <div data-theme={theme} className="fixed inset-0 grid place-items-center bg-bg text-fg">
+        <div data-theme={theme} className="kiosk-stage fixed inset-0 grid place-items-center bg-bg text-fg">
             {/* Always 9:16, whatever the window. On a Luma that is the whole panel. */}
-            <div className="relative overflow-hidden" style={{ width: 'min(100vw, 56.25vh)', height: 'min(100vh, 177.78vw)' }}>
+            <div className="kiosk-frame relative overflow-hidden">
                 {screen}
 
                 {error && stage.name !== 'wardrobe' && stage.name !== 'pair' && (
